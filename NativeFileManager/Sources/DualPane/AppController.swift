@@ -75,11 +75,12 @@ import FileManagerCore
         panes.forEach { $0.navigate(to: URL(fileURLWithPath: state.panes[$0.index].directory), recordHistory: false) }
         if let i = args.firstIndex(of: "--ui-smoke"), i+1 < args.count, args.contains("--state-dir") { runUISmoke(at: URL(fileURLWithPath: args[i+1])) }
     }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { panes.allSatisfy { $0.editor.prepareToLeave() } }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { if !flag { window.makeKeyAndOrderFront(nil) }; return true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if operationTask != nil { let a = NSAlert(); a.messageText = "文件操作尚未完成"; a.informativeText = "请等待当前操作结束，或先取消剩余项目。"; a.addButton(withTitle: "继续等待"); a.runModal(); return .terminateCancel }
-        do { try store.save(state) } catch { showError(error); return .terminateCancel }; return .terminateNow
+        guard panes.allSatisfy({ $0.editor.prepareToLeave() }) else { return .terminateCancel }; do { try store.save(state) } catch { showError(error); return .terminateCancel }; return .terminateNow
     }
     @discardableResult func update(_ body: (inout Workspace) throws -> Void, refreshSidebar: Bool = true) -> Bool {
         do { var draft = state; try body(&draft); state = draft; saveSoon(); if refreshSidebar { panes.forEach { $0.reloadSidebar() } }; return true }
@@ -157,7 +158,8 @@ import FileManagerCore
     @objc func moveFiles() { paste(move: true) }
     func paste(move: Bool) { if let editor = NSApp.keyWindow?.firstResponder as? NSTextView { editor.paste(nil); return }; let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []; performTransfer(urls, to: panes[activePane].currentURL, copy: !move) }
     @objc func undoMove() { if let editor = NSApp.keyWindow?.firstResponder as? NSTextView { editor.undoManager?.undo(); return }; guard let move = undoTransfers.popLast() else { message("没有可撤销的移动。"); return }; if FileManager.default.fileExists(atPath: move.to.path) { undoTransfers.append(move); message("原位置已有同名项目，无法自动撤销。"); return }; performTransfer([move.from], to: move.to.deletingLastPathComponent(), copy: false, recordUndo: false) }
-    @objc func previewSelection() { preview(panes[activePane].selectedURLs) }
+    @objc func previewSelection() { panes[activePane].showFilePreview() }
+    @objc func saveDocument() { _ = panes[activePane].editor.save() }
     func preview(_ urls: [URL]) { guard !urls.isEmpty else { return }; previewURLs = urls; guard let panel = QLPreviewPanel.shared() else { return }; panel.updateController(); panel.makeKeyAndOrderFront(nil); panel.reloadData() }
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
     override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) { panel.dataSource = self; panel.delegate = self }
@@ -166,7 +168,7 @@ import FileManagerCore
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! { previewURLs[index] as NSURL }
     @objc func newFolder() { panes[activePane].createFolder() }
     @objc func renameSelection() { panes[activePane].renameSelection() }
-    @objc func trashSelection() { panes[activePane].trashSelection() }
+    @objc func trashSelection() { if let editor = NSApp.keyWindow?.firstResponder as? NSTextView { editor.deleteToBeginningOfLine(nil); return }; panes[activePane].trashSelection() }
     @objc func goToFolder() { panes[activePane].goToFolder() }
     @objc func refresh() { panes[activePane].reloadDirectory() }
     @objc func toggleHidden() { panes[activePane].toggleHidden() }
@@ -175,8 +177,8 @@ import FileManagerCore
         func submenu(_ title: String) -> NSMenu { let item = NSMenuItem(); main.addItem(item); let menu = NSMenu(title: title); item.submenu = menu; return menu }
         func add(_ menu: NSMenu, _ title: String, _ action: Selector?, _ key: String, _ mods: NSEvent.ModifierFlags = [.command]) { let i = NSMenuItem(title: title, action: action, keyEquivalent: key); i.keyEquivalentModifierMask = mods; i.target = self; menu.addItem(i) }
         let app = submenu("Octo"); add(app, "设置…", #selector(openSettings), ","); app.addItem(.separator()); add(app, "退出", #selector(NSApplication.terminate(_:)), "q"); app.items.last?.target = NSApp
-        let file = submenu("文件"); add(file, "新建文件夹…", #selector(newFolder), "n", [.command,.shift]); add(file, "重命名…", #selector(renameSelection), ""); add(file, "快速预览", #selector(previewSelection), ""); add(file, "移入废纸篓", #selector(trashSelection), "\u{8}"); file.addItem(.separator()); add(file, "关闭窗口", #selector(NSWindow.performClose(_:)), "w"); file.items.last?.target = nil
-        let edit = submenu("编辑"); add(edit, "撤销移动", #selector(undoMove), "z"); edit.addItem(.separator()); add(edit, "复制文件", #selector(copyFiles), "c"); add(edit, "粘贴文件", #selector(pasteFiles), "v"); add(edit, "将项目移到此处", #selector(moveFiles), "v", [.command,.option]); add(edit, "全选", #selector(NSResponder.selectAll(_:)), "a"); edit.items.last?.target = nil
+        let file = submenu("文件"); add(file, "保存文档", #selector(saveDocument), "s"); add(file, "新建文件夹…", #selector(newFolder), "n", [.command,.shift]); add(file, "重命名…", #selector(renameSelection), ""); add(file, "快速预览", #selector(previewSelection), ""); add(file, "移入废纸篓", #selector(trashSelection), "\u{8}"); file.addItem(.separator()); add(file, "关闭窗口", #selector(NSWindow.performClose(_:)), "w"); file.items.last?.target = nil
+        let edit = submenu("编辑"); add(edit, "剪切", #selector(NSText.cut(_:)), "x"); edit.items.last?.target = nil; add(edit, "撤销移动", #selector(undoMove), "z"); edit.addItem(.separator()); add(edit, "复制文件", #selector(copyFiles), "c"); add(edit, "粘贴文件", #selector(pasteFiles), "v"); add(edit, "将项目移到此处", #selector(moveFiles), "v", [.command,.option]); add(edit, "全选", #selector(NSResponder.selectAll(_:)), "a"); edit.items.last?.target = nil
         let view = submenu("显示"); add(view, "显示双屏", #selector(restoreBoth), "2"); add(view, "显示／隐藏隐藏项目", #selector(toggleHidden), ".", [.command,.shift]); add(view, "刷新", #selector(refresh), "r")
         let go = submenu("前往"); add(go, "前往文件夹…", #selector(goToFolder), "g", [.command,.shift])
     }

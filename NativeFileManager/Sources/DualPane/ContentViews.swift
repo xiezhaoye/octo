@@ -25,14 +25,15 @@ import FileManagerCore
         thumbnail = request
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] representation, _ in DispatchQueue.main.async { guard let self, self.path == record.url.path, let representation else { return }; self.image.image = representation.nsImage } }
     }
+    func cancelThumbnail() { if let thumbnail { QLThumbnailGenerator.shared.cancel(thumbnail) }; thumbnail = nil }
     override func prepareForReuse() { super.prepareForReuse(); if let thumbnail { QLThumbnailGenerator.shared.cancel(thumbnail) }; thumbnail = nil; path = nil }
 }
 
 @MainActor final class FileCollectionView: NSCollectionView {
     weak var owner: PaneController?
-    override func mouseDown(with event: NSEvent) { if let owner { owner.app.activePane = owner.index }; super.mouseDown(with: event) }
+    override func mouseDown(with event: NSEvent) { if let owner { owner.app.activePane = owner.index; owner.menuDirectory = nil }; super.mouseDown(with: event) }
     override func keyDown(with event: NSEvent) { if event.charactersIgnoringModifiers == " " { owner?.showFilePreview(); return }; if event.keyCode == 36 { owner?.openSelection(); return }; super.keyDown(with: event) }
-    override func menu(for event: NSEvent) -> NSMenu? { window?.makeFirstResponder(self); if let owner { owner.app.activePane = owner.index }; let point = convert(event.locationInWindow, from: nil); if let index = indexPathForItem(at: point), !selectionIndexPaths.contains(index) { selectionIndexPaths = [index] }; return super.menu(for: event) }
+    override func menu(for event: NSEvent) -> NSMenu? { window?.makeFirstResponder(self); if let owner { owner.app.activePane = owner.index }; let point = convert(event.locationInWindow, from: nil); if let index = indexPathForItem(at: point) { if !selectionIndexPaths.contains(index) { selectionIndexPaths = [index] } } else { selectionIndexPaths = [] }; if let owner { owner.menuDirectory = nil }; return super.menu(for: event) }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly:true]) ? (NSEvent.modifierFlags.contains(.option) ? .copy : .move) : [] }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
@@ -41,9 +42,11 @@ import FileManagerCore
 
 @MainActor final class DirectoryColumn: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     unowned let pane: PaneController
-    let files: [FileRecord]
+    var files: [FileRecord]
+    var restoringSelection = false
     let url: URL
     let position: Int
+    var widthConstraint: NSLayoutConstraint?
     let table = ColumnTable()
     let scroll = ColumnContentScrollView()
     let heading = label("", size: 11, weight: .medium)
@@ -62,9 +65,18 @@ import FileManagerCore
     func numberOfRows(in tableView: NSTableView) -> Int { files.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? { let r = files[row]; let icon = NSImageView(image: NSWorkspace.shared.icon(forFile: r.url.path)); icon.widthAnchor.constraint(equalToConstant: 18).isActive = true; icon.heightAnchor.constraint(equalToConstant: 18).isActive = true; let text = label(r.name, size: 13); text.textColor = pane.palette.text; text.toolTip = r.url.path; let views: [NSView] = r.browsable ? [icon,text,spacer(),NSImageView(image:symbol("chevron.right") ?? NSImage())] : [icon,text]; return rowStack(views, spacing: 6) }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { let r = TintedRow(); r.tint = pane.palette.selection; return r }
-    func tableViewSelectionDidChange(_ notification: Notification) { pane.app.activePane = pane.index; pane.columnSelection = table.selectedRowIndexes.map { files[$0].url }; if table.selectedRowIndexes.count == 1, table.selectedRow >= 0 { pane.selectColumn(position, record: files[table.selectedRow]) } }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !restoringSelection else { return }
+        pane.app.activePane = pane.index
+        let previous = pane.columnSelection
+        let selection = table.selectedRowIndexes.map { files[$0].url }
+        let accepted: Bool
+        if table.selectedRowIndexes.count == 1, table.selectedRow >= 0 { accepted = pane.selectColumn(position, record: files[table.selectedRow]) }
+        else { accepted = pane.editor.prepareToLeave(); if accepted { pane.columnSelection = selection; pane.menuDirectory = nil; pane.removeDocumentPreview(); if pane.currentURL != url { pane.navigate(to: url, resetColumns: false) }; while pane.columnControllers.count > position+1 { pane.columnControllers.removeLast().view.removeFromSuperview() }; pane.layoutColumns() } }
+        if !accepted { restoringSelection = true; table.selectRowIndexes(IndexSet(files.indices.filter { previous.contains(files[$0].url) }), byExtendingSelection: false); restoringSelection = false }
+    }
     @objc func open() { pane.openSelection() }
-    func menuNeedsUpdate(_ menu: NSMenu) { pane.columnSelection = table.selectedRowIndexes.map { files[$0].url }; pane.menuNeedsUpdate(menu) }
+    func menuNeedsUpdate(_ menu: NSMenu) { pane.menuDirectory = url; pane.columnSelection = table.selectedRowIndexes.map { files[$0].url }; pane.menuNeedsUpdate(menu) }
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? { files[row].url as NSURL }
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation { info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly:true]) ? (NSEvent.modifierFlags.contains(.option) ? .copy : .move) : [] }
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool { pane.acceptFiles(info, destination: dropOperation == .on && files.indices.contains(row) && files[row].browsable ? files[row].url : url) }
@@ -74,7 +86,7 @@ import FileManagerCore
     weak var owner: DirectoryColumn?
     override func scrollWheel(with event:NSEvent){if owner?.pane.routeColumnScroll(event)==true{return};super.scrollWheel(with:event)}
     override func keyDown(with event: NSEvent) { if event.charactersIgnoringModifiers == " " { owner?.pane.showFilePreview(); return }; super.keyDown(with: event) }
-    override func menu(for event: NSEvent) -> NSMenu? { window?.makeFirstResponder(self); let row = self.row(at: convert(event.locationInWindow, from: nil)); if row >= 0 && !selectedRowIndexes.contains(row) { selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }; return super.menu(for: event) }
+    override func menu(for event: NSEvent) -> NSMenu? { window?.makeFirstResponder(self); let row = self.row(at: convert(event.locationInWindow, from: nil)); if row >= 0 && !selectedRowIndexes.contains(row) { selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else if row < 0 { deselectAll(nil) }; return super.menu(for: event) }
 }
 
 @MainActor final class ColumnContentScrollView:NSScrollView{

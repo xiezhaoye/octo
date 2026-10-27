@@ -55,7 +55,7 @@ final class MenuOutline: NSOutlineView {
     }
     override func menu(for event: NSEvent) -> NSMenu? {
         focused?(); window?.makeFirstResponder(self); let r = row(at: convert(event.locationInWindow, from: nil))
-        if r >= 0 && !selectedRowIndexes.contains(r) { selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false) }
+        if r >= 0 && !selectedRowIndexes.contains(r) { selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false) } else if r < 0 { deselectAll(nil) }
         return super.menu(for: event)
     }
 }
