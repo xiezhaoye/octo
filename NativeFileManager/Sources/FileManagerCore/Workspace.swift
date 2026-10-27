@@ -66,14 +66,6 @@ public struct PaneState: Codable, Equatable {
     }
 }
 
-public struct CustomCommand: Identifiable, Codable, Equatable, Sendable {
-    public var id = UUID()
-    public var name: String
-    public var script: String
-    public var foldersOnly: Bool
-    public init(name: String, script: String, foldersOnly: Bool = false) { self.name = name; self.script = script; self.foldersOnly = foldersOnly }
-}
-
 public struct Workspace: Codable, Equatable {
     public var version = 1
     public var panes: [PaneState] = [PaneState(), PaneState()]
@@ -82,6 +74,7 @@ public struct Workspace: Codable, Equatable {
     public var conflictPolicy: ConflictPolicy = .ask
     public var searchScope: SearchScope = .recursive
     public var commands: [CustomCommand] = []
+    public var contextMenuOrder: [String]?
     public init() {}
 
     public mutating func normalize() {

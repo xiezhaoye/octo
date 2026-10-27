@@ -7,7 +7,7 @@ let package = Package(
     products: [.executable(name: "DualPane", targets: ["DualPane"])],
     targets: [
         .target(name: "FileManagerCore"),
-        .executableTarget(name: "DualPane", dependencies: ["FileManagerCore"], resources: [.process("Resources")]),
+        .executableTarget(name: "DualPane", dependencies: ["FileManagerCore"], resources: [.process("Resources/Octo.png"), .process("Resources/OctoDock.png"), .copy("Resources/Editor")]),
         .testTarget(name: "FileManagerCoreTests", dependencies: ["FileManagerCore"])
     ],
     swiftLanguageModes: [.v5]

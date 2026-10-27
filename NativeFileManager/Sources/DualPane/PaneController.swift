@@ -16,7 +16,9 @@ final class FileNode: NSObject {
     var currentURL: URL
     var records: [FileRecord] = []
     var nodes: [FileNode] = []
-    var history: [URL] = []
+    var history: [PaneLocation] = []
+    var navigationRestoreTask: Task<Void, Never>?
+    var restoringLocation = false
     var historyIndex = -1
     var loadTask: Task<Void, Never>?
     var expandTask: Task<Void, Never>?
@@ -25,7 +27,13 @@ final class FileNode: NSObject {
     var watchTimer: Timer?
     var columnControllers: [DirectoryColumn] = []
     var columnSelection: [URL] = []
+    var menuDirectory: URL?
+    lazy var editor = DocumentEditor(pane: self)
+    var editorWidth: NSLayoutConstraint?
+    var columnRefreshTask: Task<Void, Never>?
     var isLoading = false
+    var loadingIndicatorTask: Task<Void, Never>?
+    var lastLoadSucceeded = false
     var sidebar: SidebarController!
     let list = MenuOutline()
     let listScroll = NSScrollView()
@@ -68,7 +76,8 @@ final class FileNode: NSObject {
         let collapsePane = iconButton("rectangle.lefthalf.inset.filled", index == 0 ? "收起左屏" : "收起右屏", target: self, action: #selector(hidePane))
         for button in [backButton!,forwardButton!,up,hiddenButton!,collapsePane] { button.image = button.image?.withSymbolConfiguration(.init(pointSize:19,weight:.regular)) }
         spinner.widthAnchor.constraint(equalToConstant:12).isActive=true;spinner.heightAnchor.constraint(equalToConstant:12).isActive=true
-        toolbarView = rowStack([backButton, forwardButton, up, spacer(), spinner, modeControl, hiddenButton, collapsePane], spacing: 3)
+        let spinnerSlot = NSView(); spinnerSlot.widthAnchor.constraint(equalToConstant: 12).isActive = true; spinnerSlot.heightAnchor.constraint(equalToConstant: 12).isActive = true; pin(spinner, in: spinnerSlot)
+        toolbarView = rowStack([backButton, forwardButton, up, spacer(), spinnerSlot, modeControl, hiddenButton, collapsePane], spacing: 3)
         (toolbarView as? NSStackView)?.edgeInsets = NSEdgeInsets(top: 12, left: 8, bottom: 12, right: 8)
         toolbarView.heightAnchor.constraint(equalToConstant: 58).isActive = true
         sidebar = SidebarController(pane: self)
@@ -88,7 +97,7 @@ final class FileNode: NSObject {
         errorLabel.maximumNumberOfLines = 4; errorLabel.alignment = .center; errorLabel.lineBreakMode = .byWordWrapping; errorLabel.isHidden = true
         let menu = NSMenu(); menu.delegate = self; list.menu = menu
         let iconMenu = NSMenu(); iconMenu.delegate = self; collection.menu = iconMenu
-        list.focused = { [weak self] in guard let self else { return }; self.app.activePane = self.index }
+        list.focused = { [weak self] in guard let self else { return }; self.app.activePane = self.index; self.menuDirectory = nil }
         list.space = { [weak self] in self?.showFilePreview() }; list.enter = { [weak self] in self?.openSelection() }
         list.target = self; list.doubleAction = #selector(openSelection)
         collection.owner = self
@@ -138,58 +147,81 @@ final class FileNode: NSObject {
         hiddenButton.contentTintColor = app.state.panes[index].showHidden ? p.accent : p.secondary
         modeControl.palette = p
         pathControl.show(currentURL,palette:p);sidebarRail.palette=p
-        sidebar.applyTheme(); list.reloadData(); collection.reloadData(); columnControllers.forEach { $0.applyTheme() }; updateFocus()
+        sidebar.applyTheme(); list.reloadData(); collection.reloadData(); columnControllers.forEach { $0.applyTheme() }; editor.applyTheme(); updateFocus()
     }
     func updateFocus() {guard isViewLoaded else{return};view.setAccessibilityLabel("\(index == 0 ? "左屏" : "右屏")：\(currentURL.lastPathComponent)\(app.activePane == index ? "，当前操作屏" : "")")}
     func installMode() {
-        contentHost.subviews.forEach { $0.removeFromSuperview() }
         let mode = app.state.panes[index].mode
         modeControl.selectedSegment = mode == .list ? 0 : mode == .columns ? 1 : 2
-        if mode == .list { pin(listScroll, in: contentHost) }
-        else if mode == .icons { pin(iconScroll, in: contentHost) }
-        else { pin(columnsScroll, in: contentHost) }
-        if !errorLabel.isHidden { errorLabel.translatesAutoresizingMaskIntoConstraints = false; contentHost.addSubview(errorLabel); NSLayoutConstraint.activate([errorLabel.centerXAnchor.constraint(equalTo: contentHost.centerXAnchor),errorLabel.centerYAnchor.constraint(equalTo: contentHost.centerYAnchor),errorLabel.widthAnchor.constraint(lessThanOrEqualTo: contentHost.widthAnchor,constant:-32)]) }
+        let content: NSView = mode == .list ? listScroll : mode == .icons ? iconScroll : columnsScroll
+        if content.superview !== contentHost {
+            contentHost.subviews.filter { $0 !== errorLabel }.forEach { $0.removeFromSuperview() }
+            pin(content, in: contentHost)
+        }
+        if mode == .columns { errorLabel.removeFromSuperview() }
+        else if !errorLabel.isHidden && errorLabel.superview !== contentHost {
+            errorLabel.translatesAutoresizingMaskIntoConstraints = false; contentHost.addSubview(errorLabel)
+            NSLayoutConstraint.activate([errorLabel.centerXAnchor.constraint(equalTo: contentHost.centerXAnchor),errorLabel.centerYAnchor.constraint(equalTo: contentHost.centerYAnchor),errorLabel.widthAnchor.constraint(lessThanOrEqualTo: contentHost.widthAnchor,constant:-32)])
+        }
     }
     @objc func modeChanged() {
         app.activePane = index
+        guard editor.prepareToLeave() else { modeControl.selectedSegment = app.state.panes[index].mode == .list ? 0 : app.state.panes[index].mode == .columns ? 1 : 2; return }
+        removeDocumentPreview(); menuDirectory = nil
         let mode: BrowseMode = modeControl.selectedSegment == 0 ? .list : modeControl.selectedSegment == 1 ? .columns : .icons
         app.update({ $0.panes[index].mode = mode }, refreshSidebar: false); installMode(); reloadDirectory()
     }
     @objc func hidePane() { app.collapse(index) }
     @objc func toggleHidden() { app.activePane = index; app.update({ $0.panes[index].showHidden.toggle() }, refreshSidebar: false); applyTheme(); reloadDirectory() }
-    @objc func back() { guard historyIndex > 0 else { return }; historyIndex -= 1; navigate(to: history[historyIndex], recordHistory: false) }
-    @objc func forward() { guard historyIndex+1 < history.count else { return }; historyIndex += 1; navigate(to: history[historyIndex], recordHistory: false) }
-    @objc func up() { navigate(to: currentURL.deletingLastPathComponent()) }
     @objc func goToFolder() {
         guard let path = app.input("前往文件夹", initial: currentURL.path, detail: "可以输入完整路径或以 ~ 开头的路径。") else { return }
         navigate(to: URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
     }
     func navigate(to url: URL, recordHistory: Bool = true, resetColumns: Bool = true) {
+        if resetColumns { guard editor.prepareToLeave() else { return }; rememberLocation(); removeDocumentPreview() }
+        navigationRestoreTask?.cancel(); restoringLocation = false
+        menuDirectory = nil
         app.activePane = index; currentURL = url.standardizedFileURL; expandTask?.cancel()
-        records = []; nodes = []; list.reloadData(); collection.reloadData(); if resetColumns { columnSelection = [] }
-        if recordHistory && history.last != currentURL { if historyIndex+1 < history.count { history.removeSubrange((historyIndex+1)..<history.count) }; history.append(currentURL); historyIndex = history.count-1 }
-        if history.isEmpty { history = [currentURL]; historyIndex = 0 }
+        if app.state.panes[index].mode != .columns { records = []; nodes = []; list.reloadData(); collection.reloadData() }
+        if resetColumns { columnSelection = [] }
+        let location = PaneLocation(directory:currentURL, columns:resetColumns ? [currentURL] : columnControllers.map(\.url), selection:columnSelection)
+        if recordHistory && (!history.indices.contains(historyIndex) || history[historyIndex].directory != currentURL) {
+            if historyIndex+1 < history.count { history.removeSubrange((historyIndex+1)..<history.count) }
+            history.append(location); historyIndex = history.count-1
+        }
+        if history.isEmpty { history = [location]; historyIndex = 0 }
         pathControl.show(currentURL,palette:palette)
         backButton.isEnabled = historyIndex > 0; forwardButton.isEnabled = historyIndex+1 < history.count
         app.update({ $0.panes[index].directory = currentURL.path }, refreshSidebar: false)
         sidebar.selectCurrentDirectory(); installMode(); load(resetColumns: resetColumns); startWatching()
     }
-    func reloadDirectory() { if !isViewLoaded { return }; load(resetColumns: true) }
+    func reloadDirectory() {
+        if !isViewLoaded { return }
+        if app.state.panes[index].mode == .columns && !columnControllers.isEmpty { refreshColumns(); return }
+        load(resetColumns: true)
+    }
     func load(resetColumns: Bool) {
         loadTask?.cancel(); let token = UUID(); generation = token; let url = currentURL; let hidden = app.state.panes[index].showHidden
-        isLoading = true; spinner.startAnimation(nil); status.stringValue = "正在读取…"; errorLabel.isHidden = true
+        isLoading = true; lastLoadSucceeded = false; status.stringValue = "正在读取…"; errorLabel.isHidden = true
+        loadingIndicatorTask?.cancel()
+        loadingIndicatorTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled, let self, self.generation == token, self.isLoading else { return }
+            self.spinner.startAnimation(nil)
+        }
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let result = try await self.reader.contents(of: url, showHidden: hidden)
                 guard !Task.isCancelled && self.generation == token else { return }
-                self.records = result; self.nodes = self.sortedNodes(result.map(FileNode.init)); self.list.reloadData(); self.collection.reloadData(); self.spinner.stopAnimation(nil); self.isLoading = false
+                self.lastLoadSucceeded = true
+                self.records = result; self.nodes = self.sortedNodes(result.map(FileNode.init)); self.list.reloadData(); self.collection.reloadData(); self.loadingIndicatorTask?.cancel(); self.spinner.stopAnimation(nil); self.isLoading = false
                 self.status.stringValue = result.isEmpty ? "此文件夹为空" : "\(result.count) 个项目"
                 self.errorLabel.isHidden = !result.isEmpty; self.errorLabel.stringValue = "此文件夹为空\n可拖入文件，或右键新建文件夹"
                 self.installMode()
                 if resetColumns && self.app.state.panes[self.index].mode == .columns { self.resetColumns(with: result, url: url) }
             } catch is CancellationError { }
-            catch { guard self.generation == token else { return }; self.records = []; self.nodes = []; self.list.reloadData(); self.collection.reloadData(); self.resetColumns(with: [], url: url); self.spinner.stopAnimation(nil); self.isLoading = false; self.status.stringValue = "无法读取目录"; self.errorLabel.stringValue = "无法读取目录\n请检查路径和访问权限，或点击上一级"; self.errorLabel.isHidden = false; self.installMode(); self.app.message(error.localizedDescription) }
+            catch { guard self.generation == token else { return }; self.records = []; self.nodes = []; self.list.reloadData(); self.collection.reloadData(); if resetColumns { self.resetColumns(with: [], url: url) }; self.loadingIndicatorTask?.cancel(); self.spinner.stopAnimation(nil); self.isLoading = false; self.status.stringValue = "无法读取目录"; self.errorLabel.stringValue = "无法读取目录\n请检查路径和访问权限，或点击上一级"; self.errorLabel.isHidden = false; self.installMode(); self.app.message(error.localizedDescription) }
         }
     }
     func reloadSidebar() { guard isViewLoaded else { return }; sidebar.reload() }
@@ -260,32 +292,34 @@ final class FileNode: NSObject {
         }
     }
     @objc func collapseAll() { expandTask?.cancel(); list.collapseItem(nil, collapseChildren: true); spinner.stopAnimation(nil); status.stringValue = "\(records.count) 个项目" }
-    @objc func openSelection() { guard let url = selectedURLs.first else { return }; if let r = try? FileRecord(url: url), r.browsable { navigate(to: url) } else { NSWorkspace.shared.open(url) } }
-    @objc func showFilePreview() { app.preview(selectedURLs) }
-    func createFolder() { guard let name = app.input("新建文件夹", initial: "未命名文件夹") else { return }; Task { do { _ = try await app.fileOperator.createDirectory(in: currentURL, name: name); reloadDirectory() } catch { app.showError(error) } } }
+    @objc func openSelection() { guard let url = selectedURLs.first else { return }; if let r = try? FileRecord(url: url), r.browsable {
+            if app.state.panes[index].mode == .columns, let position=columnControllers.firstIndex(where:{$0.files.contains(where:{$0.url==url})}) { _=selectColumn(position,record:r) }
+            else {navigate(to:url)}
+        } else if app.state.panes[index].mode == .columns && DocumentEditor.supports(url) { _ = showDocumentPreview(url) } else { NSWorkspace.shared.open(url) } }
+    @objc func showFilePreview() {
+        if let url = selectedURLs.first, DocumentEditor.supports(url) {
+            guard app.state.panes[index].mode == .columns else { app.message("请切换到分栏视图，在右侧预览和编辑文档。"); return }
+            _ = showDocumentPreview(url)
+        } else { app.preview(selectedURLs) }
+    }
+    func createFolder() { guard let name = app.input("新建文件夹", initial: "未命名文件夹") else { return }; let parent = creationDirectory; Task { do { _ = try await app.fileOperator.createDirectory(in: parent, name: name); reloadDirectory() } catch { app.showError(error) } } }
     func renameSelection() { guard let url = selectedURLs.first, let name = app.input("重命名", initial: url.lastPathComponent) else { return }; Task { do { _ = try await app.fileOperator.rename(url, to: name); reloadDirectory(); app.update({ $0.normalize() }) } catch { app.showError(error) } } }
     func trashSelection() { let urls = selectedURLs; guard !urls.isEmpty, app.confirm("将 \(urls.count) 个项目移入废纸篓？", detail: "可从系统废纸篓恢复。", button: "移入废纸篓") else { return }; Task { do { try await app.fileOperator.trash(urls); reloadDirectory() } catch { app.showError(error) } } }
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems(); app.activePane = index
-        func item(_ title: String, _ action: Selector, target: AnyObject? = nil) { let i = NSMenuItem(title: title, action: action, keyEquivalent: ""); i.target = target ?? self; menu.addItem(i) }
-        if !selectedURLs.isEmpty { item("打开", #selector(openSelection)); item("快速预览", #selector(showFilePreview)); item("复制完整路径", #selector(copyPath)); menu.addItem(.separator()); item("复制", #selector(AppController.copyFiles), target: app); item("重命名…", #selector(renameFromMenu)); item("移入废纸篓…", #selector(trashFromMenu)); menu.addItem(.separator()) }
-        item("粘贴", #selector(AppController.pasteFiles), target: app); item("将剪贴板项目移到此处", #selector(AppController.moveFiles), target: app); item("新建文件夹…", #selector(newFolderFromMenu))
-        if app.state.panes[index].mode == .list {menu.addItem(.separator());item("展开所有文件夹",#selector(expandAll));item("收拢所有文件夹",#selector(collapseAll))}
-        menu.addItem(.separator()); item("在终端打开", #selector(openTerminal)); item("Termius：复制路径并打开", #selector(openTermius)); item(app.state.panes[index].showHidden ? "隐藏隐藏项目" : "显示隐藏项目", #selector(toggleHidden))
-        if !app.state.commands.isEmpty { menu.addItem(.separator()); for c in app.state.commands { if c.foldersOnly && selectedURLs.contains(where: { (try? FileRecord(url: $0).browsable) != true }) { continue }; let i = NSMenuItem(title: c.name, action: #selector(runCommand(_:)), keyEquivalent: ""); i.target = self; i.representedObject = c.id; menu.addItem(i) } }
-        menu.addItem(.separator()); item("管理自定义命令…", #selector(AppController.openSettings), target: app)
-    }
     @objc func renameFromMenu() { renameSelection() }
     @objc func trashFromMenu() { trashSelection() }
     @objc func newFolderFromMenu() { createFolder() }
-    @objc func copyPath() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(selectedURLs.map(\.path).joined(separator: "\n"), forType: .string); app.message("已复制完整路径") }
+    @objc func copyPath() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(FileContextPaths.fullPaths(for: selectedURLs, directory: contextualDirectory).joined(separator: "\n"), forType: .string); app.message("已复制完整路径") }
+    @objc func copyDirectoryPath() {
+        let paths = FileContextPaths.directoryPaths(for: selectedURLs, directory: contextualDirectory)
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string); app.message("已复制目录路径")
+    }
     @objc func copyCurrentPath(){app.activePane=index;NSPasteboard.general.clearContents();NSPasteboard.general.setString(currentURL.path,forType:.string);app.message("已复制当前目录路径")}
     @objc func openCurrentTerminal(){app.activePane=index;launchTerminal(at:currentURL)}
-    var terminalDirectory: URL { if let url = selectedURLs.first { return (try? FileRecord(url: url).browsable) == true ? url : url.deletingLastPathComponent() }; return currentURL }
+    var terminalDirectory: URL { if let url = selectedURLs.first { return (try? FileRecord(url: url).browsable) == true ? url : url.deletingLastPathComponent() }; return contextualDirectory }
     @objc func openTerminal() {launchTerminal(at:terminalDirectory)}
     func launchTerminal(at directory:URL) { let configuration = NSWorkspace.OpenConfiguration(); NSWorkspace.shared.open([directory], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"), configuration: configuration) { [weak self] _, error in if let error { DispatchQueue.main.async { self?.app.showError(error) } } } }
     @objc func openTermius() { let path = "/Applications/Termius.app"; guard FileManager.default.fileExists(atPath: path) else { app.message("未找到 Termius，请先安装或使用默认终端。"); return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(terminalDirectory.path, forType: .string); NSWorkspace.shared.open(URL(fileURLWithPath: path)); app.message("目录路径已复制，已打开 Termius。") }
-    @objc func runCommand(_ sender: NSMenuItem) { guard let id = sender.representedObject as? UUID, let command = app.state.commands.first(where: { $0.id == id }) else { return }; let script = renderCommand(command.script, urls: selectedURLs, directory: currentURL); app.message("正在执行：" + command.name); let dir = currentURL
+    @objc func runCommand(_ sender: NSMenuItem) { guard let id = sender.representedObject as? UUID, let command = app.state.commands.first(where: { $0.id == id }) else { return }; guard command.applies(to: selectedURLs, directory: contextualDirectory) else { return }; let script = renderCommand(command.script, urls: selectedURLs, directory: contextualDirectory); app.message("正在执行：" + command.name); let dir = contextualDirectory
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/zsh"); p.arguments = ["-lc", script]; p.currentDirectoryURL = dir; let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
             do { try p.run(); var data = Data(); var truncated = false; while true { let chunk = pipe.fileHandleForReading.readData(ofLength: 65536); if chunk.isEmpty { break }; let remaining = max(0, 2_000_000-data.count); data.append(chunk.prefix(remaining)); if chunk.count > remaining { truncated = true } }; p.waitUntilExit(); var output = String(decoding: data, as: UTF8.self); if truncated { output += "\n输出超过 2 MB，后续内容未显示。" }; DispatchQueue.main.async { guard let self else { return }; self.app.message("\(command.name)：退出码 \(p.terminationStatus)"); CommandOutput.show(title: command.name, output: output.isEmpty ? "命令已结束，没有输出。" : output); self.reloadDirectory() } } catch { DispatchQueue.main.async { self?.app.showError(error) } }
         }
@@ -295,13 +329,20 @@ final class FileNode: NSObject {
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) { app.activePane = index; status.stringValue = "\(records.count) 个项目 · 已选 \(selectedURLs.count) 项" }
     func collectionView(_ collectionView: NSCollectionView, canDragItemsAt indexPaths: Set<IndexPath>, with event: NSEvent) -> Bool { true }
     func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? { records[indexPath.item].url as NSURL }
-    func resetColumns(with files: [FileRecord], url: URL) { columnControllers.forEach { $0.view.removeFromSuperview() }; columnControllers = []; addColumn(files, url: url) }
+    func resetColumns(with files: [FileRecord], url: URL) { columnRefreshTask?.cancel(); columnControllers.forEach { $0.view.removeFromSuperview() }; columnControllers = []; addColumn(files, url: url) }
     func addColumn(_ files: [FileRecord], url: URL) {
-        let column = DirectoryColumn(pane: self, files: files, url: url, position: columnControllers.count); columnControllers.append(column); columnStack.addArrangedSubview(column.view); column.view.widthAnchor.constraint(equalToConstant: 230).isActive = true; column.view.heightAnchor.constraint(equalTo: columnStack.heightAnchor).isActive = true
-        layoutColumns();DispatchQueue.main.async {[weak self] in self?.layoutColumns(scrollToEnd:true)}
+        let column = DirectoryColumn(pane: self, files: files, url: url, position: columnControllers.count); columnControllers.append(column); columnStack.addArrangedSubview(column.view); column.widthConstraint = column.view.widthAnchor.constraint(equalToConstant: 230); column.widthConstraint?.isActive = true; column.view.heightAnchor.constraint(equalTo: columnStack.heightAnchor).isActive = true
+        rememberLocation(); layoutColumns();DispatchQueue.main.async {[weak self] in self?.layoutColumns(scrollToEnd:true)}
     }
     func layoutColumns(scrollToEnd:Bool=false){
-        let clip=columnsScroll.contentView;let width=max(clip.bounds.width,CGFloat(columnControllers.count)*230+CGFloat(max(0,columnControllers.count-1)))
+        let clip=columnsScroll.contentView
+        let hasEditor = editor.isViewLoaded && editor.view.superview === columnStack
+        let lastColumnWidth = hasEditor ? min(230, max(160, clip.bounds.width * 0.35)) : 230
+        for (position, column) in columnControllers.enumerated() { column.widthConstraint?.constant = position == columnControllers.count-1 ? lastColumnWidth : 230 }
+        let previewWidth = hasEditor ? max(320, clip.bounds.width - lastColumnWidth - 1) : 0
+        editorWidth?.constant = previewWidth
+        let directoryWidth = CGFloat(max(0, columnControllers.count-1))*231 + (columnControllers.isEmpty ? 0 : lastColumnWidth)
+        let width=max(clip.bounds.width, directoryWidth + (hasEditor ? previewWidth+1 : 0))
         let size=NSSize(width:width,height:clip.bounds.height)
         if columnStack.frame.size != size {columnStack.setFrameSize(size)}
         columnStack.layoutSubtreeIfNeeded();let maximum=max(0,width-clip.bounds.width)
@@ -318,13 +359,26 @@ final class FileNode: NSObject {
         let next=min(maximum,max(0,clip.bounds.minX-dx*scale))
         clip.scroll(to:NSPoint(x:next,y:0));columnsScroll.reflectScrolledClipView(clip);return true
     }
-    func selectColumn(_ position: Int, record: FileRecord) {
-        app.activePane = index; columnSelection = [record.url]
+    @discardableResult func selectColumn(_ position: Int, record: FileRecord) -> Bool {
+        if editor.fileURL != record.url.resolvingSymlinksInPath(), !editor.prepareToLeave() { return false }
+        rememberLocation()
+        app.activePane = index; columnSelection = [record.url]; menuDirectory = nil
+        removeDocumentPreview(clear: editor.fileURL != record.url.resolvingSymlinksInPath())
         while columnControllers.count > position+1 { columnControllers.removeLast().view.removeFromSuperview() }
         layoutColumns()
-        guard record.browsable else { return }
+        guard record.browsable else {
+            if columnControllers.indices.contains(position), currentURL != columnControllers[position].url { navigate(to: columnControllers[position].url, resetColumns: false) }
+            if DocumentEditor.supports(record.url) { _ = showDocumentPreview(record.url) }
+            return true
+        }
         navigate(to: record.url, resetColumns: false)
         let selected = record.url
-        Task { do { let files = try await reader.contents(of: selected, showHidden: app.state.panes[index].showHidden); guard currentURL == selected, app.state.panes[index].mode == .columns else { return }; addColumn(files, url: selected) } catch { app.showError(error) } }
+        let task = loadTask, token = generation
+        Task { @MainActor in
+            await task?.value
+            guard generation == token, lastLoadSucceeded, currentURL == selected, app.state.panes[index].mode == .columns, columnSelection == [selected], columnControllers.count == position+1 else { return }
+            addColumn(records, url: selected)
+        }
+        return true
     }
 }
