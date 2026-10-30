@@ -30,8 +30,8 @@ import AppKit
     override func draw(_ dirtyRect:NSRect){
         let rect=bounds.insetBy(dx:0.5,dy:0.5)
         let path=NSBezierPath(roundedRect:rect,xRadius:7,yRadius:7)
-        (state == .on ? palette.selection : palette.canvas).setFill();path.fill()
-        palette.line.setStroke();path.lineWidth=1;path.stroke()
+        (state == .on ? palette.selection : NSColor.clear).setFill();path.fill()
+
         guard let image else{return}
         let alignment=image.alignmentRect
         let size=image.size

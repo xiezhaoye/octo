@@ -75,6 +75,8 @@ public struct Workspace: Codable, Equatable {
     public var searchScope: SearchScope = .recursive
     public var commands: [CustomCommand] = []
     public var contextMenuOrder: [String]?
+    public var contextCommandGroups:[String:String]?
+    public var folderColors: [String:[FolderTagColor]]?
     public init() {}
 
     public mutating func normalize() {

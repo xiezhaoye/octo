@@ -6,6 +6,9 @@ import QuartzCore
     var onNavigate: ((URL) -> Void)?
     var copyButton: NSButton?
     var terminalButton: NSButton?
+    var newFolderButton: NSButton?
+    var newFileButton: NSButton?
+    let creationSeparator = NSBox()
     private(set) var currentButton: NSButton?
     private var urls: [URL] = []
     override init(frame frameRect: NSRect) {
@@ -16,7 +19,12 @@ import QuartzCore
         setContentCompressionResistancePriority(.init(200), for: .horizontal)
     }
     required init?(coder: NSCoder) { fatalError() }
-    func setActions(copy:NSButton,terminal:NSButton){copyButton=copy;terminalButton=terminal}
+    func setActions(copy:NSButton,terminal:NSButton,newFolder:NSButton,newFile:NSButton){
+        copyButton=copy;terminalButton=terminal;newFolderButton=newFolder;newFileButton=newFile
+        creationSeparator.boxType = .separator
+        creationSeparator.widthAnchor.constraint(equalToConstant:1).isActive=true
+        creationSeparator.heightAnchor.constraint(equalToConstant:17).isActive=true
+    }
     func show(_ location: URL, palette: Palette) {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         currentButton=nil
@@ -37,6 +45,10 @@ import QuartzCore
         }
         if let copyButton{stack.addArrangedSubview(copyButton)}
         if let terminalButton{stack.addArrangedSubview(terminalButton)}
+        if let newFolderButton,let newFileButton {
+            stack.addArrangedSubview(creationSeparator);stack.setCustomSpacing(8,after:terminalButton ?? creationSeparator)
+            stack.addArrangedSubview(newFolderButton);stack.addArrangedSubview(newFileButton)
+        }
         let space = spacer(); stack.addArrangedSubview(space); toolTip = location.path
     }
     @objc private func chosen(_ sender: NSButton) { if urls.indices.contains(sender.tag) { onNavigate?(urls[sender.tag]) } }
@@ -127,6 +139,6 @@ import QuartzCore
 
 extension Palette {
     var groupHeader: NSColor {
-        sidebar.blended(withFraction:dark ? 0.14 : 0.06,of:accent) ?? sidebar
+        NSColor.clear
     }
 }

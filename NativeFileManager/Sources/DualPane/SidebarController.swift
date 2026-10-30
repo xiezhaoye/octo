@@ -14,6 +14,7 @@ final class SidebarItem: NSObject {
 @MainActor final class SidebarController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     unowned let pane: PaneController
     let outline = MenuOutline()
+    let material=MaterialSurface(material:.sidebar,blending:.behindWindow)
     var items: [SidebarItem] = []
     var reloading = false
     let addGroupButton=NSButton()
@@ -26,7 +27,7 @@ final class SidebarItem: NSObject {
     init(pane: PaneController) { self.pane = pane; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError() }
     override func loadView() {
-        view = NSView(); view.wantsLayer = true
+        view = NSView(); view.wantsLayer = true;pin(material,in:view)
         let column = NSTableColumn(identifier: .init("folder")); column.resizingMask = .autoresizingMask; outline.addTableColumn(column); outline.outlineTableColumn = column; outline.headerView = nil; outline.style = .plain; outline.dataSource = self; outline.delegate = self; outline.rowHeight = 30; outline.indentationPerLevel = 14; outline.intercellSpacing = NSSize(width: 0, height: 2); outline.selectionHighlightStyle = .regular
         outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         outline.target = self; outline.action = #selector(rowClicked); outline.autoresizingMask = [.width]
@@ -40,7 +41,7 @@ final class SidebarItem: NSObject {
         let stack = NSStackView(views: [scroll, bottom]); stack.orientation = .vertical; stack.spacing = 0; stack.alignment = .leading; scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true; bottom.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true; pin(stack, in: view)
         reload(); applyTheme()
     }
-    func applyTheme() { guard isViewLoaded else { return }; view.layer?.backgroundColor = pane.palette.sidebar.cgColor; outline.backgroundColor = pane.palette.sidebar; outline.enclosingScrollView?.backgroundColor = pane.palette.sidebar; emptyHint.textColor = pane.palette.secondary; outline.reloadData() }
+    func applyTheme() { guard isViewLoaded else { return }; material.apply(pane.palette.sidebar);view.layer?.backgroundColor = NSColor.clear.cgColor; outline.backgroundColor = .clear; outline.enclosingScrollView?.drawsBackground=false; emptyHint.textColor = pane.palette.secondary; outline.reloadData() }
     func reload() {
         guard isViewLoaded else { return }; reloading = true
         let groups = pane.app.state.panes[pane.index].groups; items = groups.map(SidebarItem.init); outline.reloadData()
@@ -64,9 +65,11 @@ final class SidebarItem: NSObject {
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let item = item as? SidebarItem else { return nil }
         if let entry = item.entry {
-            let image = NSImageView(image: symbol("folder") ?? NSImage()); image.contentTintColor = pane.palette.accent; image.widthAnchor.constraint(equalToConstant: 17).isActive = true; image.heightAnchor.constraint(equalToConstant: 17).isActive = true
+            let colors = pane.app.state.colors(for:entry.url)
+            let icon=colors.isEmpty ? (symbol("folder")?.withSymbolConfiguration(.init(paletteColors:[pane.palette.accent])) ?? NSImage()) : (try? FileRecord(url:entry.url)).map{taggedFolderIcon($0,colors:colors)} ?? NSImage()
+            let image = StableFolderImageView(image:icon); image.widthAnchor.constraint(equalToConstant: 17).isActive = true; image.heightAnchor.constraint(equalToConstant: 17).isActive = true
             let text = label(entry.name, size: 13); text.textColor = pane.palette.text; text.toolTip = entry.path
-            let cell = NSTableCellView(); pin(rowStack([image,text], spacing: 6), in: cell, inset: 2); cell.textField = text; cell.imageView = image; cell.toolTip = entry.path; return cell
+            let cell = NSTableCellView(); pin(rowStack([image,text,spacer(),FolderTagDots(colors)], spacing: 6), in: cell, inset: 2); cell.textField = text; cell.imageView = image; cell.toolTip = entry.path; return cell
         }
         let name = pane.app.state.panes[pane.index].groups.first(where: { $0.id == item.groupID })?.name ?? ""
         return GroupHeaderContent(name:name,groupID:item.groupID,outline:outline,palette:pane.palette,target:self,action:#selector(addToGroup(_:)))
@@ -137,10 +140,23 @@ final class SidebarItem: NSObject {
         if let entry = item.entry { pane.app.update { state in for i in state.panes[pane.index].groups.indices { state.panes[pane.index].groups[i].entries.removeAll { $0.id == entry.id } } } }
         else if pane.app.confirm("删除这个分组？", detail: "仅移除分组及导航入口，磁盘文件夹保持不变。", button: "删除分组") { pane.app.update { $0.panes[pane.index].groups.removeAll { $0.id == item.groupID } } }
     }
-    func menuNeedsUpdate(_ menu: NSMenu) {
+    @objc func openEntryTerminal() {
+        guard let entry=(outline.item(atRow:outline.selectedRow) as? SidebarItem)?.entry else{return}
+        pane.app.activePane=pane.index;pane.launchTerminal(at:entry.url)
+    }
+    func menuNeedsUpdate(_ menu:NSMenu) {
         menu.removeAllItems()
-        func add(_ title: String, _ action: Selector) { let i = NSMenuItem(title: title, action: action, keyEquivalent: ""); i.target = self; menu.addItem(i) }
-        add("新建分组…", #selector(newGroup)); add("添加文件夹入口…", #selector(addFolders)); add("将当前目录加入此组", #selector(addCurrentFolder))
-        if let item = outline.item(atRow: outline.selectedRow) as? SidebarItem { menu.addItem(.separator()); if item.entry == nil { add("重命名分组…", #selector(renameGroup)); add("删除分组…", #selector(removeItem)) } else { add("复制完整路径", #selector(copyEntryPath)); let terminal = NSMenuItem(title:"在终端打开",action:#selector(PaneController.openTerminal),keyEquivalent:""); terminal.target = pane; menu.addItem(terminal); add("移除文件夹入口", #selector(removeItem)) } }
+        func add(_ title:String,_ action:Selector) {let item=NSMenuItem(title:title,action:action,keyEquivalent:"");item.target=self;menu.addItem(item)}
+        let selected=outline.item(atRow:outline.selectedRow) as? SidebarItem
+        if let entry=selected?.entry {
+            add("复制完整路径",#selector(copyEntryPath));add("在终端打开",#selector(openEntryTerminal));menu.addItem(.separator())
+            if let tags=folderTagMenu(urls:[entry.url],workspace:pane.app.state,activate:{[weak self] color,enabled in self?.pane.applyFolderTag(color,enabled:enabled,urls:[entry.url])}) {menu.addItem(tags);menu.addItem(.separator())}
+        }
+        add("新建分组…",#selector(newGroup));add("添加文件夹入口…",#selector(addFolders));add("将当前目录加入此组",#selector(addCurrentFolder))
+        if let selected {
+            menu.addItem(.separator())
+            if selected.entry == nil {add("重命名分组…",#selector(renameGroup));add("删除分组…",#selector(removeItem))}
+            else {add("移除文件夹入口",#selector(removeItem))}
+        }
     }
 }

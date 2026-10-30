@@ -163,7 +163,7 @@ extension AppController {
                 p.collapseAll();p.list.sortDescriptors=[];p.reloadDirectory();await settle()
                 try check(!p.toolbarView.subviews.contains{$0 is NSSearchField},"搜索入口已删除")
                 try check(window.toolbar?.items.filter{$0.itemIdentifier.rawValue=="restore"}.isEmpty == true,"标题栏删除分栏图标")
-                try check(paneDivider.frame.width==4,"双屏具有明显分界")
+                try check(paneDivider.frame.width==1,"双屏使用轻量细分界")
                 checks.append("名称、修改日期、大小双向排序，移除搜索和标题栏分栏按钮")
                 let fileMenu=NSMenu();panes[0].menuNeedsUpdate(fileMenu);try check(fileMenu.items.contains(where:{$0.title=="展开所有文件夹"}) && fileMenu.items.contains(where:{$0.title=="收拢所有文件夹"}),"右键保留展开与收拢")
                 panes[0].expandAll();await settle();try check(panes[0].list.numberOfRows>panes[0].records.count,"全部展开");panes[0].collapseAll();checks.append("右键保留列表全部展开和收拢")
@@ -283,6 +283,9 @@ extension AppController {
                 editor.imageCanvas.keyDown(with:imageKey(123));if let task=editor.imageTask{await task.value}
                 try check(editor.imageURL == siblings[3],"键盘左方向键浏览上一张")
                 try check(editor.info.stringValue.contains("↑") && editor.info.stringValue.contains("←") && editor.info.stringValue.contains("→"),"图片预览明确显示三个方向快捷键提示")
+                let imageBounds=editor.imageView.convert(editor.imageView.bounds,to:editor.imageCanvas)
+                try check(editor.imageCanvas.previous.frame.maxX <= imageBounds.minX && editor.imageCanvas.next.frame.minX >= imageBounds.maxX,"左右图标位于图片外侧，不覆盖图片")
+                try check(!editor.imageCanvas.previous.isBordered && editor.imageCanvas.previous.superview === editor.imageCanvas,"图片箭头无圆形背景")
                 try capture("image-floating-navigation")
                 let columnsBeforeOverview=documentPane.columnControllers.map(\.url)
                 editor.imageCanvas.overview.performClick(nil);if let task=gallery.loadTask{await task.value}
@@ -313,7 +316,7 @@ extension AppController {
                 documentPane.modeControl.selectedSegment=0;documentPane.modeChanged();await settle()
                 try check(editor.document == nil && editor.imageURL == nil && editor.view.superview == nil,"离开分栏视图移除文档区域")
                 checks.append("分栏内 Markdown/HTML/TXT/JSON 预览编辑、新建定位、保存、未保存取消保护、目录刷新保留、JSON 格式化、HTML 隔离、右键文件类型筛选")
-                settings!.table.reloadData()
+                settings!.selectSection(.commands);settings!.table.reloadData()
                 let customKey=ContextMenuOrder.key(for:state.commands[0])
                 let customRow=settings!.menuKeys.firstIndex(of:customKey)!
                 let dragBoard=NSPasteboard.withUniqueName()
@@ -332,9 +335,169 @@ extension AppController {
                 checks.append("皮肤无默认焦点环、全部内置与自定义命令可排序、上下拖动顺序映射菜单并持久化")
                 preview([source.appendingPathComponent("体检说明.txt")]);await settle();try check(QLPreviewPanel.shared()?.isVisible == true,"快速预览窗口");QLPreviewPanel.shared()?.orderOut(nil);checks.append("原生 Quick Look 预览窗口")
                 state.skin = .native;applyAppearance();try store.save(state);let saved=try store.load();try check(saved.panes[0].groups==state.panes[0].groups && saved.panes[0].sidebarWidth==212 && !saved.panes[0].sidebarCollapsed,"状态保存");checks.append("分组、侧栏宽度与收起状态保存和恢复")
-                window.setContentSize(NSSize(width:1000,height:620));await settle();try capture("narrow-window");window.setContentSize(NSSize(width:1440,height:800));await settle();try check(paneSlots[0].frame.height>500,"窗口调整后分屏保持高度");try check(abs(paneSlots[0].frame.width+paneSlots[1].frame.width+4-window.contentView!.bounds.width)<2,"双屏宽度总和匹配窗口");
+                window.setContentSize(NSSize(width:1000,height:620));await settle();try capture("narrow-window");window.setContentSize(NSSize(width:1440,height:800));await settle();try check(paneSlots[0].frame.height>500,"窗口调整后分屏保持高度");try check(abs(paneSlots[0].frame.width+paneSlots[1].frame.width+1-window.contentView!.bounds.width)<2,"双屏宽度总和匹配窗口");
                 for p in panes {try check(abs(p.view.frame.width-p.sidebarSplit.frame.width)<2 && abs(p.fileHost.frame.maxX-p.view.bounds.maxX)<2,"内部文件区匹配分屏：\(p.index) view=\(p.view.frame) split=\(p.sidebarSplit.frame) file=\(p.fileHost.frame)")};
                 for p in panes{let mode=p.modeControl.convert(p.modeControl.bounds,to:p.toolbarView);try check(mode.maxX<p.toolbarView.bounds.width,"缩放恢复后浏览模式按钮保持可见：\(p.index) mode=\(mode) toolbar=\(p.toolbarView.bounds)")};try capture("native-final");try capture("titlebar",titleBrand)
+                // Folder tag verification touches only the isolated smoke fixture.
+                let tagPane=panes[0],tagFolder=source.appendingPathComponent("颜色标签测试")
+                try fm.createDirectory(at:tagFolder,withIntermediateDirectories:true)
+                tagPane.modeControl.selectedSegment=1;tagPane.modeChanged()
+                tagPane.navigate(to:source);await tagPane.loadTask?.value;await settle()
+                guard let tagColumn=tagPane.columnControllers.first,let tagRow=tagColumn.files.firstIndex(where:{$0.url.path == tagFolder.path}) else {throw NSError(domain:"UISmoke",code:20)}
+                tagColumn.table.selectRowIndexes(IndexSet(integer:tagRow),byExtendingSelection:false);await settle()
+                let tagOriginalColumns=tagPane.columnControllers.map{ObjectIdentifier($0)}
+                let tagMenu=NSMenu();tagColumn.menuNeedsUpdate(tagMenu)
+                guard let tagItem=tagMenu.items.first(where:{$0.identifier?.rawValue == "folderTags"}),let palette=tagItem.submenu?.items.first?.view as? FolderTagPalette else {throw NSError(domain:"UISmoke",code:21)}
+                try check(palette.swatches.count == 7,"文件夹右键显示七色选择器")
+                let tagActivePane=activePane
+                palette.swatches[1].performClick(nil);await settle()
+                try check(activePane == tagActivePane,"更新标签不改变键盘操作所在的屏幕")
+                try check(state.colors(for:tagFolder) == [.orange],"右键色块保存 Octo 独立橙色标签")
+                try check(state.colors(for:tagColumn.files[tagRow].url) == [.orange],"分栏标签立即刷新")
+                try check(tagPane.columnControllers.map{ObjectIdentifier($0)} == tagOriginalColumns && tagColumn.table.selectedRow == tagRow,"标签更新保留分栏和选中项")
+                @MainActor func dots(in view:NSView)->[FolderTagDots] { (view as? FolderTagDots).map{[$0]} ?? view.subviews.flatMap{dots(in:$0)} }
+                let tagCell=tagColumn.table.view(atColumn:0,row:tagRow,makeIfNecessary:true)!
+                try check(dots(in:tagCell).contains{$0.colors == [.orange]},"分栏文件夹行显示鲜艳色点")
+                tagColumn.menuNeedsUpdate(tagMenu)
+                let selectedPalette=tagMenu.items.first(where:{$0.identifier?.rawValue == "folderTags"})!.submenu!.items[0].view as! FolderTagPalette
+                try check(selectedPalette.swatches[1].selectedState == .on,"已添加颜色显示勾选")
+                selectedPalette.swatches[4].performClick(nil);await settle()
+                try check(Set(state.colors(for:tagFolder)) == Set([.orange,.blue]),"多色标签叠加")
+                tagColumn.menuNeedsUpdate(tagMenu)
+                let removalPalette=tagMenu.items.first(where:{$0.identifier?.rawValue == "folderTags"})!.submenu!.items[0].view as! FolderTagPalette
+                removalPalette.swatches[1].performClick(nil);await settle()
+                try check(state.colors(for:tagFolder) == [.blue],"再次点击移除对应颜色并保留其他颜色")
+                tagPane.applyFolderTag(.orange,enabled:true,urls:[source]);await settle()
+                let taggedSidebar=tagPane.sidebar!
+                let entryRow=(0..<taggedSidebar.outline.numberOfRows).first{(taggedSidebar.outline.item(atRow:$0) as? SidebarItem)?.entry?.url.path == source.path}!
+                let sidebarCell=taggedSidebar.outline.view(atColumn:0,row:entryRow,makeIfNecessary:true)!
+                try check(dots(in:sidebarCell).contains{$0.colors == [.orange]},"侧栏文件夹同步 Octo 标签色点")
+                taggedSidebar.outline.selectRowIndexes(IndexSet(integer:entryRow),byExtendingSelection:false)
+                let sidebarMenu=NSMenu();taggedSidebar.menuNeedsUpdate(sidebarMenu)
+                try check(sidebarMenu.items.contains{$0.title == "颜色标签"},"侧栏文件夹右键提供颜色标签")
+                tagPane.modeControl.selectedSegment=0;tagPane.modeChanged();tagPane.navigate(to:source);await settle()
+                guard let taggedNode=tagPane.nodes.first(where:{$0.record.url.path == tagFolder.path}) else {throw NSError(domain:"UISmoke",code:22)}
+                let listCell=tagPane.outlineView(tagPane.list,viewFor:tagPane.list.tableColumns.first,item:taggedNode)!
+                try check(dots(in:listCell).contains{$0.colors == [.blue]},"列表显示文件夹标签")
+                tagPane.list.expandItem(taggedNode);await settle()
+                let mixedPalette=FolderTagPalette(urls:[tagFolder,family],workspace:state,activate:{_,_ in})
+                try check(mixedPalette.swatches[4].selectedState == .mixed,"多选文件夹显示部分已添加颜色")
+                let tile=FileTile();tile.configure(try FileRecord(url:tagFolder),palette:tagPane.palette,colors:state.colors(for:tagFolder))
+                try check(tile.tagDots.colors == [.blue],"图标视图显示标签")
+                tagPane.list.selectRowIndexes(IndexSet(integer:tagPane.list.row(forItem:taggedNode)),byExtendingSelection:false)
+                let finalTagMenu=NSMenu();tagPane.menuNeedsUpdate(finalTagMenu)
+                let clear=finalTagMenu.items.first(where:{$0.identifier?.rawValue == "folderTags"})!.submenu!.items.last as! ClearFolderTagsMenuItem
+                clear.activate();await settle()
+                try check(tagPane.list.isItemExpanded(taggedNode),"移除标签保留列表已展开的文件夹")
+                try check(state.colors(for:tagFolder).isEmpty,"移除全部内置标签同步清除文件夹颜色")
+                tagPane.applyFolderTag(.orange,enabled:true,urls:[tagFolder]);await settle()
+                try capture("folder-tags")
+                // Put the real menu palette in a fixture panel for a reliable visual capture.
+                let palettePanel=NSPanel(contentRect:NSRect(x:0,y:0,width:258,height:72),styleMask:[.titled],backing:.buffered,defer:false)
+                palettePanel.isReleasedWhenClosed=false;palettePanel.contentView=FolderTagPalette(urls:[tagFolder],workspace:state,activate:{_,_ in})
+                palettePanel.contentView?.wantsLayer=true;palettePanel.contentView?.layer?.backgroundColor=NSColor.windowBackgroundColor.cgColor
+                palettePanel.orderFront(nil);await settle();try capture("folder-tag-palette",palettePanel.contentView);palettePanel.orderOut(nil)
+                let nativeTags=try URL(fileURLWithPath:tagFolder.path).resourceValues(forKeys:[.tagNamesKey]).tagNames ?? []
+                try check(nativeTags.isEmpty,"Octo 标签不写入访达")
+                try store.save(state);try check(try store.load().colors(for:tagFolder) == [.orange],"独立标签保存并恢复")
+                checks.append("文件夹七色独立标签：右键添加叠加及移除、选中反馈、侧栏列表分栏图标同步、分栏与选中项保持")
+                let pathBar=tagPane.pathControl
+                try check(pathBar.newFolderButton?.action == #selector(PaneController.createCurrentFolder) && pathBar.newFileButton?.action == #selector(PaneController.showCurrentFileTypes(_:)),"路径栏提供新建文件夹和新建文件图标")
+                try check(pathBar.creationSeparator.frame.minX > pathBar.terminalButton!.frame.minX && pathBar.newFolderButton!.frame.minX > pathBar.creationSeparator.frame.minX,"路径栏新建操作位于终端右侧并以竖线分隔")
+                let typesMenu=tagPane.documentTypesMenu(in:source)
+                try check(typesMenu.items.count == TextFileKind.allCases.count && typesMenu.items.allSatisfy{($0.representedObject as? [String:String])?["directory"] == source.path},"路径栏下拉列出全部文件类型且固定目标为当前目录")
+                let crowded=output.appendingPathComponent("大量文件空白区")
+                try fm.createDirectory(at:crowded,withIntermediateDirectories:true)
+                for index in 0..<80 {try Data("sample".utf8).write(to:crowded.appendingPathComponent(String(format:"file-%03d.txt",index)))}
+                tagPane.modeControl.selectedSegment=1;tagPane.modeChanged();tagPane.navigate(to:crowded);await tagPane.loadTask?.value;await settle()
+                let crowdedColumn=tagPane.columnControllers[0],crowdedTable=tagPane.columnControllers[0].table
+                let rowsBottom=crowdedTable.rect(ofRow:crowdedTable.numberOfRows-1).maxY
+                try check(crowdedTable.bounds.height-rowsBottom >= 70,"长目录分栏在最后一项下保留可滚动空白区：bounds=\(crowdedTable.bounds) frame=\(crowdedTable.frame) rowsBottom=\(rowsBottom)")
+                crowdedColumn.scroll.contentView.scroll(to:NSPoint(x:0,y:crowdedTable.bounds.height-crowdedColumn.scroll.contentView.bounds.height));await settle()
+                let blank=NSPoint(x:30,y:rowsBottom+30)
+                try check(crowdedTable.row(at:blank) == -1,"空白区不对应文件行")
+                crowdedTable.selectRowIndexes(IndexSet(integer:0),byExtendingSelection:false);await settle()
+                let event=NSEvent.mouseEvent(with:.rightMouseDown,location:crowdedTable.convert(blank,to:nil),modifierFlags:[],timestamp:0,windowNumber:window.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:1)!
+                _ = crowdedTable.menu(for:event);let blankMenu=NSMenu();crowdedColumn.menuNeedsUpdate(blankMenu)
+                try check(tagPane.selectedURLs.isEmpty && tagPane.contextualDirectory.path == crowded.path && blankMenu.items.contains{$0.title == "新建文件"},"底部空白右键使用目录菜单，不选中文件")
+                try capture("directory-bottom-blank")
+                tagPane.modeControl.selectedSegment=0;tagPane.modeChanged();tagPane.navigate(to:crowded);await tagPane.loadTask?.value;await settle()
+                let listBottom=tagPane.list.rect(ofRow:tagPane.list.numberOfRows-1).maxY
+                try check(tagPane.list.bounds.height-listBottom >= 70,"长目录列表同样保留底部空白")
+                checks.append("目录列表和分栏底部可滚动空白右键区、路径栏竖线和新建图标、文件类型下拉定位、图片箭头外置无圆圈")
+                // This verification exercises real menu/AppKit state, and updates only an isolated app copy.
+                let menuPane=panes[0]
+                menuPane.navigate(to:source);await menuPane.loadTask?.value;await settle()
+                if let row=menuPane.nodes.firstIndex(where:{$0.record.url.lastPathComponent == "体检说明.txt"}) {menuPane.list.selectRowIndexes(IndexSet(integer:row),byExtendingSelection:false)}
+                let groupedMenu=NSMenu();menuPane.menuNeedsUpdate(groupedMenu)
+                try check(groupedMenu.items.filter(\.isSeparatorItem).count>=4 && groupedMenu.items.first?.isSeparatorItem == false && groupedMenu.items.last?.isSeparatorItem == false,"右键按用途分组且无首尾分隔线")
+                guard let openWith=groupedMenu.items.first(where:{$0.identifier?.rawValue == "openWith"})?.submenu else {throw NSError(domain:"UISmoke",code:31)}
+                try check(openWith.items.last?.title == "选择其他应用…" && openWith.items.contains{$0 is FileApplicationItem},"文件提供系统打开方式和选择其他应用")
+                try check(openWith.items.compactMap{$0 as? FileApplicationItem}.allSatisfy{$0.files.map(\.path) == menuPane.selectedURLs.map(\.path)},"打开方式保留被右键点击的文件快照")
+                let sidebarEntry=menuPane.sidebar.items.flatMap(\.children).first!
+                let selectedSidebarRow=menuPane.sidebar.outline.row(forItem:sidebarEntry)
+                menuPane.sidebar.outline.selectRowIndexes(IndexSet(integer:selectedSidebarRow),byExtendingSelection:false);await settle()
+                let iconSidebarCell=menuPane.sidebar.outline.view(atColumn:0,row:selectedSidebarRow,makeIfNecessary:true) as! NSTableCellView
+                try check(iconSidebarCell.imageView is StableFolderImageView && iconSidebarCell.imageView?.allowsVibrancy == false && iconSidebarCell.imageView?.image?.isTemplate == false,"选中文件夹图标不被系统改色或冲淡")
+                if let row=menuPane.sidebar.outline.rowView(atRow:selectedSidebarRow,makeIfNecessary:true) {try check(row.interiorBackgroundStyle == .normal,"选中行保持图标原始对比度")}
+                if let uncolored=menuPane.sidebar.items.flatMap(\.children).first(where:{state.colors(for:$0.entry!.url).isEmpty}) {
+                    let row=menuPane.sidebar.outline.row(forItem:uncolored)
+                    menuPane.sidebar.outline.selectRowIndexes(IndexSet(integer:row),byExtendingSelection:false);await settle()
+                    let cell=menuPane.sidebar.outline.view(atColumn:0,row:row,makeIfNecessary:true) as! NSTableCellView
+                    try check(cell.imageView is StableFolderImageView && cell.imageView?.image?.isTemplate == false,"未设置颜色的文件夹选中后也保留图标颜色")
+                    try capture("sidebar-uncolored-selected")
+                    menuPane.sidebar.outline.selectRowIndexes(IndexSet(integer:selectedSidebarRow),byExtendingSelection:false);await settle()
+                }
+                try check(menuPane.sidebar.material.effect.material == .sidebar && menuPane.headerMaterial.effect.material == .headerView,"侧栏与导航使用原生系统材质")
+                try check(menuPane.sidebar.material.effect.isHidden == NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,"毛玻璃遵守降低透明度设置")
+                try capture("glass-workspace")
+                manageContextCommands()
+                try check(settings!.selectedSection == .commands,"管理右键命令直接进入对应设置分类")
+                try check(settings!.sectionButtons.count == 3,"设置按外观、右键菜单、关于与更新分类")
+                for section in SettingsController.Section.allCases {
+                    settings!.selectSection(section);await settle();try check(settings!.pages[section]?.superview === settings!.pageHost,"设置侧栏切换内容")
+                    try check(abs(settings!.pageHost.frame.maxX+26-settings!.window!.contentView!.bounds.width+176)<2,"设置右侧内容占满可用宽度")
+                    try capture("settings-"+String(describing:section),settings!.window?.contentView)
+                }
+                let updater=settings!.updater
+                updater.checkRelease={throw UpdateError.invalid("测试网络不可用")};updater.checkForUpdates();await updater.task?.value
+                try check(updater.status.stringValue.contains("检查失败") && updater.checkButton.isEnabled,"检查失败保留重试入口")
+                updater.checkRelease={AppRelease(version:"99.0.0",build:999,minimumSystemVersion:"14.0",architecture:"arm64",downloadURL:URL(string:"https://octo-dl.xiezhaoye.site/Octo-99.0.0-macos-arm64.zip")!,sha256:String(repeating:"0",count:64),bytes:1,notes:["测试更新内容"])}
+                updater.checkForUpdates();await updater.task?.value
+                try check(!updater.installButton.isHidden && updater.status.stringValue.contains("99.0.0") && updater.notes.stringValue.contains("测试更新内容"),"新版本显示内容与下载入口")
+                updater.checkRelease=nil;updater.checkForUpdates();await updater.task?.value
+                try check(updater.status.stringValue.contains("最新版本") && updater.release == nil,"真实 HTTPS 更新服务返回当前版本")
+                try capture("settings-updates-online",settings!.window?.contentView);settings!.close()
+                let release=try await AppUpdateService.shared.check()
+                let prepared=try await AppUpdateService.shared.prepare(release,progress:{_ in})
+                let installedRoot=output.appendingPathComponent("更新安装隔离验证"),installed=installedRoot.appendingPathComponent("Octo.app")
+                try fm.createDirectory(at:installedRoot,withIntermediateDirectories:true)
+                let oldBinary=try Data(contentsOf:Bundle.main.executableURL!),newBinary=try Data(contentsOf:prepared.app.appendingPathComponent("Contents/MacOS/DualPane"))
+                let currentBundle=Bundle.main.bundleURL
+                try await Task.detached {
+                    try AppUpdateInstaller.run("/usr/bin/ditto",[currentBundle.path,installed.path])
+                    let helper=try AppUpdateInstaller.launch(prepared:prepared,current:installed,waitingFor:0,reopen:false)
+                    helper.waitUntilExit()
+                    guard helper.terminationStatus == 0 else{throw UpdateError.invalid("隔离更新助手失败")}
+                }.value
+                try check(try Data(contentsOf:installed.appendingPathComponent("Contents/MacOS/DualPane")) == newBinary,"真实安装包通过校验并替换隔离应用")
+                let backups=try fm.contentsOfDirectory(at:installedRoot,includingPropertiesForKeys:nil).filter{$0.lastPathComponent.hasPrefix(".Octo-backup-")}
+                try check(backups.count == 1 && Data(contentsOf:backups[0].appendingPathComponent("Contents/MacOS/DualPane")) == oldBinary,"安装保留上一应用备份")
+                let failureWork=output.appendingPathComponent("更新失败隔离验证");try fm.createDirectory(at:failureWork,withIntermediateDirectories:true)
+                let failureScript=failureWork.appendingPathComponent("install.sh");try Data(AppUpdateInstaller.helper.utf8).write(to:failureScript)
+                let failedProcess=Process();failedProcess.executableURL=URL(fileURLWithPath:"/bin/sh");failedProcess.arguments=[failureScript.path,"0",installed.path,failureWork.appendingPathComponent("missing.app").path,failureWork.appendingPathComponent("backup.app").path,failureWork.path,"no"]
+                try failedProcess.run();failedProcess.waitUntilExit()
+                try check(failedProcess.terminationStatus != 0 && Data(contentsOf:installed.appendingPathComponent("Contents/MacOS/DualPane")) == newBinary,"缺失更新包不会移动或删除旧应用")
+                var installations=0
+                let dirtyEditor=panes[0].editor
+                try check(dirtyEditor.open(source.appendingPathComponent("体检说明.txt")),"准备更新未保存保护测试")
+                dirtyEditor.text.string += "\n未保存测试";dirtyEditor.textDidChange(Notification(name:NSText.didChangeNotification));dirtyEditor.unsavedDecision={.alertThirdButtonReturn}
+                updateInstallAction={installations+=1}
+                try check(applicationShouldTerminate(NSApp) == .terminateCancel && installations == 0 && updateInstallAction == nil,"未保存编辑取消退出时不启动安装助手")
+                dirtyEditor.clear();dirtyEditor.unsavedDecision=nil
+                updateInstallAction={installations+=1}
+                try check(applicationShouldTerminate(NSApp) == .terminateNow && installations == 1,"保存及退出检查通过后才允许启动安装")
+                checks.append("毛玻璃侧栏与导航、设置三分类、分组菜单和打开方式、图标选中稳定、真实在线版本检查与下载校验、隔离替换及备份、失败保留原应用、未保存取消保护")
                 let report:[String:Any]=["passed":true,"checks":checks,"windowSize":[window.frame.width,window.frame.height],"note":"原生控件程序化验收；未执行用户文件操作，未模拟实体鼠标拖拽。"]
                 try JSONSerialization.data(withJSONObject:report,options:[.prettyPrinted,.sortedKeys]).write(to:output.appendingPathComponent("ui-verification.json"));print("UI_SMOKE_PASS::"+output.path);succeeded=true
             } catch { print("UI_SMOKE_FAIL::"+error.localizedDescription);try? Data(error.localizedDescription.utf8).write(to:output.appendingPathComponent("failure.txt")) }

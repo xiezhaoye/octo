@@ -42,6 +42,7 @@ final class FileNode: NSObject {
     let columnStack = NSStackView()
     let columnsScroll = ColumnCanvasScrollView()
     let contentHost = NSView()
+    let headerMaterial=MaterialSurface(material:.headerView,blending:.withinWindow)
     let pathControl = BreadcrumbBar()
     let sidebarSplit = SidebarSplitView()
     let sidebarHost = NSView()
@@ -85,11 +86,14 @@ final class FileNode: NSObject {
         pathControl.onNavigate = { [weak self] url in self?.navigate(to:url) }; pathControl.setAccessibilityLabel("当前目录路径")
         let copy = iconButton("doc.on.doc", "复制当前目录路径", target:self, action:#selector(copyCurrentPath))
         let terminal = iconButton("terminal", "在当前目录打开终端", target:self, action:#selector(openCurrentTerminal))
-        pathControl.setActions(copy:copy,terminal:terminal)
+        let newFolder=iconButton("folder.badge.plus", "在当前目录新建文件夹", target:self, action:#selector(createCurrentFolder))
+        let newFile=iconButton("doc.badge.plus", "在当前目录新建文件", target:self, action:#selector(showCurrentFileTypes(_:)))
+        pathControl.setActions(copy:copy,terminal:terminal,newFolder:newFolder,newFile:newFile)
         let pathRow = rowStack([pathControl], spacing: 3); pathRow.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 4, right: 8); pathRow.heightAnchor.constraint(equalToConstant: 38).isActive = true
-        let content = NSStackView(views: [toolbarView!,pathRow,contentHost]); content.orientation = .vertical; content.spacing = 1; content.alignment = .leading
+        let headerStack=NSStackView(views:[toolbarView!,pathRow]);headerStack.orientation = .vertical;headerStack.alignment = .leading;headerStack.spacing=1;pin(headerStack,in:headerMaterial)
+        let content = NSStackView(views: [headerMaterial,contentHost]); content.orientation = .vertical; content.spacing = 1; content.alignment = .leading
         navigationBackground = content; content.wantsLayer = true
-        for v in [toolbarView!,pathRow,contentHost] { v.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
+        for v in [toolbarView!,pathRow,headerMaterial,contentHost] { v.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
         pin(content,in:fileHost)
         sidebarSplit.owner = self; sidebarSplit.addSubview(sidebarHost); sidebarSplit.addSubview(fileHost); pin(sidebarSplit,in:view)
         sidebarRail.target = self; sidebarRail.action = #selector(toggleSidebar)
@@ -114,7 +118,7 @@ final class FileNode: NSObject {
     func rememberSidebarWidth(_ width:CGFloat) { app.update({$0.panes[index].sidebarWidth=Double(min(480,max(144,width)))},refreshSidebar:false) }
     func resizeSidebar(to width:CGFloat) { rememberSidebarWidth(width);applySidebarState() }
     func setupList() {
-        list.dataSource = self; list.delegate = self; list.headerView = NSTableHeaderView(); list.rowHeight = 28; list.intercellSpacing = NSSize(width: 6, height: 0); list.allowsMultipleSelection = true; list.usesAlternatingRowBackgroundColors = true; list.indentationPerLevel = 16
+        list.bottomPadding = 72; list.dataSource = self; list.delegate = self; list.headerView = NSTableHeaderView(); list.rowHeight = 28; list.intercellSpacing = NSSize(width: 6, height: 0); list.allowsMultipleSelection = true; list.usesAlternatingRowBackgroundColors = false; list.indentationPerLevel = 16
         for (id, title, width) in [("name", "名称", CGFloat(270)), ("date", "修改日期", CGFloat(115)), ("size", "大小", CGFloat(65))] {
             let c = NSTableColumn(identifier: .init(id)); c.title = title; c.width = width; c.minWidth = id == "name" ? 120 : 55; c.resizingMask = id == "name" ? [.autoresizingMask, .userResizingMask] : .userResizingMask; c.sortDescriptorPrototype = NSSortDescriptor(key:id,ascending:true); list.addTableColumn(c)
         }
@@ -123,7 +127,7 @@ final class FileNode: NSObject {
         list.autoresizingMask = [.width]; listScroll.documentView = list; listScroll.hasVerticalScroller = true; listScroll.hasHorizontalScroller = true; listScroll.autohidesScrollers = true
     }
     func setupIcons() {
-        let layout = NSCollectionViewFlowLayout(); layout.itemSize = NSSize(width: 108, height: 112); layout.minimumInteritemSpacing = 12; layout.minimumLineSpacing = 14; layout.sectionInset = NSEdgeInsets(top: 18, left: 16, bottom: 18, right: 16)
+        let layout = NSCollectionViewFlowLayout(); layout.itemSize = NSSize(width: 108, height: 112); layout.minimumInteritemSpacing = 12; layout.minimumLineSpacing = 14; layout.sectionInset = NSEdgeInsets(top: 18, left: 16, bottom: 84, right: 16)
         collection.collectionViewLayout = layout; collection.dataSource = self; collection.delegate = self; collection.isSelectable = true; collection.allowsMultipleSelection = true
         collection.register(FileTile.self, forItemWithIdentifier: .init("file")); collection.registerForDraggedTypes([.fileURL])
         collection.setDraggingSourceOperationMask([.copy,.move], forLocal: true); collection.setDraggingSourceOperationMask([.copy,.move], forLocal: false)
@@ -139,9 +143,9 @@ final class FileNode: NSObject {
     func applyTheme() {
         guard isViewLoaded else { return }; let p = palette
         view.layer?.backgroundColor = p.line.cgColor
-        toolbarView?.wantsLayer = true;toolbarView?.layer?.backgroundColor = p.toolbar.cgColor
+        toolbarView?.wantsLayer = true;toolbarView?.layer?.backgroundColor = NSColor.clear.cgColor;headerMaterial.apply(p.toolbar)
         contentHost.wantsLayer = true; contentHost.layer?.backgroundColor = p.canvas.cgColor
-        navigationBackground.layer?.backgroundColor = p.toolbar.cgColor
+        navigationBackground.layer?.backgroundColor = p.canvas.cgColor
         list.backgroundColor = p.canvas; iconScroll.backgroundColor = p.canvas; collection.backgroundColors = [p.canvas]; columnsScroll.backgroundColor = p.canvas; columnStack.wantsLayer = true; columnStack.layer?.backgroundColor = p.line.cgColor
         status.textColor = p.secondary; errorLabel.textColor = p.secondary
         hiddenButton.contentTintColor = app.state.panes[index].showHidden ? p.accent : p.secondary
@@ -267,8 +271,8 @@ final class FileNode: NSObject {
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let node = item as? FileNode else { return nil }; let r = node.record; let id = tableColumn?.identifier.rawValue ?? "name"
         if id == "name" {
-            let cell = NSTableCellView(); let image = NSImageView(); image.image = NSWorkspace.shared.icon(forFile: r.url.path); image.widthAnchor.constraint(equalToConstant: 18).isActive = true; image.heightAnchor.constraint(equalToConstant: 18).isActive = true
-            let text = label(r.name, size: 13); text.textColor = r.hidden ? palette.secondary : palette.text; text.toolTip = r.url.path; let stack = rowStack([image, text], spacing: 7); pin(stack, in: cell, inset: 2); cell.textField = text; cell.imageView = image; return cell
+            let cell = NSTableCellView(); let image = NSImageView(); image.image = taggedFolderIcon(r,colors:app.state.colors(for:r.url)); image.widthAnchor.constraint(equalToConstant: 18).isActive = true; image.heightAnchor.constraint(equalToConstant: 18).isActive = true
+            let text = label(r.name, size: 13); text.textColor = r.hidden ? palette.secondary : palette.text; text.toolTip = r.url.path; let stack = rowStack([image, text, spacer(), FolderTagDots(app.state.colors(for:r.url))], spacing: 7); pin(stack, in: cell, inset: 2); cell.textField = text; cell.imageView = image; return cell
         }
         let text = label(id == "date" ? (r.modified.map { Self.dateFormatter.string(from: $0) } ?? "—") : (r.directory ? "—" : ByteCountFormatter.string(fromByteCount: r.size, countStyle: .file)), size: 11); text.textColor = palette.secondary; if id == "size" { text.alignment = .right }; return text
     }
@@ -302,7 +306,7 @@ final class FileNode: NSObject {
             _ = showDocumentPreview(url)
         } else { app.preview(selectedURLs) }
     }
-    func createFolder() { guard let name = app.input("新建文件夹", initial: "未命名文件夹") else { return }; let parent = creationDirectory; Task { do { _ = try await app.fileOperator.createDirectory(in: parent, name: name); reloadDirectory() } catch { app.showError(error) } } }
+    func createFolder(in directory:URL? = nil) { guard let name = app.input("新建文件夹", initial: "未命名文件夹") else { return }; let parent = directory ?? creationDirectory; Task { do { _ = try await app.fileOperator.createDirectory(in: parent, name: name); reloadDirectory() } catch { app.showError(error) } } }
     func renameSelection() { guard let url = selectedURLs.first, let name = app.input("重命名", initial: url.lastPathComponent) else { return }; Task { do { _ = try await app.fileOperator.rename(url, to: name); reloadDirectory(); app.update({ $0.normalize() }) } catch { app.showError(error) } } }
     func trashSelection() { let urls = selectedURLs; guard !urls.isEmpty, app.confirm("将 \(urls.count) 个项目移入废纸篓？", detail: "可从系统废纸篓恢复。", button: "移入废纸篓") else { return }; Task { do { try await app.fileOperator.trash(urls); reloadDirectory() } catch { app.showError(error) } } }
     @objc func renameFromMenu() { renameSelection() }
@@ -325,7 +329,7 @@ final class FileNode: NSObject {
         }
     }
     func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { records.count }
-    func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem { let item = collectionView.makeItem(withIdentifier: .init("file"), for: indexPath) as! FileTile; item.configure(records[indexPath.item], palette: palette); return item }
+    func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem { let item = collectionView.makeItem(withIdentifier: .init("file"), for: indexPath) as! FileTile; item.configure(records[indexPath.item], palette: palette, colors: app.state.colors(for:records[indexPath.item].url)); return item }
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) { app.activePane = index; status.stringValue = "\(records.count) 个项目 · 已选 \(selectedURLs.count) 项" }
     func collectionView(_ collectionView: NSCollectionView, canDragItemsAt indexPaths: Set<IndexPath>, with event: NSEvent) -> Bool { true }
     func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? { records[indexPath.item].url as NSURL }

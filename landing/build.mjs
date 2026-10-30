@@ -6,7 +6,7 @@ const [version,build]=readFileSync(join(root,'../VERSION'),'utf8').trim().split(
 if(!/^\d+\.\d+\.\d+$/.test(version)||!/^\d+$/.test(build))throw Error('Invalid VERSION');
 let html=readFileSync(join(root,'index.html'),'utf8').replaceAll('{{VERSION}}',version);
 let script=readFileSync(join(root,'site.js'),'utf8');
-const required=['assets/logo.png','assets/octo-workspace.jpg','assets/octo-list.jpg','assets/octo-icons.jpg'];
+const required=['assets/logo.png','assets/octo-workspace.jpg','assets/octo-list.jpg','assets/octo-icons.jpg','assets/octo-document-preview.jpg','assets/octo-json-preview.jpg','assets/octo-image-browsing.jpg','assets/octo-image-overview.jpg'];
 for(const asset of required)if(!existsSync(join(root,asset)))throw Error(`Missing asset: ${asset}`);
 const downloads=[...html.matchAll(/href="([^"]+\.zip)"/g)].map(m=>m[1]);
 if(downloads.length<2||downloads.some(url=>url!==`https://octo-dl.xiezhaoye.site/Octo-${version}-macos-arm64.zip`))throw Error('Download links must use the current versioned Octo R2 domain');

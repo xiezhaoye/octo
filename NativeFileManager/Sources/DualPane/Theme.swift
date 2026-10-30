@@ -18,7 +18,7 @@ struct Palette {
 
 func symbol(_ name: String, _ description: String = "") -> NSImage? { NSImage(systemSymbolName: name, accessibilityDescription: description) }
 func iconButton(_ image: String, _ tip: String, target: AnyObject?, action: Selector) -> NSButton {
-    let b = NSButton(image: symbol(image, tip) ?? NSImage(), target: target, action: action)
+    let b = GlassIconButton(image: symbol(image, tip) ?? NSImage(), target: target, action: action)
     b.bezelStyle = .texturedRounded; b.isBordered = false; b.toolTip = tip; b.setAccessibilityLabel(tip)
     b.widthAnchor.constraint(equalToConstant: 28).isActive = true
     b.heightAnchor.constraint(equalToConstant: 28).isActive = true
@@ -39,11 +39,24 @@ func rowStack(_ views: [NSView], spacing: CGFloat = 6) -> NSStackView {
 func spacer() -> NSView { let v = NSView(); v.setContentHuggingPriority(.init(1), for: .horizontal); return v }
 
 final class TintedRow: NSTableRowView {
+    override var interiorBackgroundStyle:NSView.BackgroundStyle {.normal}
     var tint: NSColor = .selectedContentBackgroundColor
     override func drawSelection(in dirtyRect: NSRect) { tint.setFill(); NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 1), xRadius: 4, yRadius: 4).fill() }
 }
 
 final class MenuOutline: NSOutlineView {
+    var bottomPadding:CGFloat = 0
+    override var frame:NSRect {
+        get {super.frame}
+        set {
+            var value=newValue
+            value.size.height=max(value.height,(numberOfRows > 0 ? rect(ofRow:numberOfRows-1).maxY : 0)+bottomPadding)
+            super.frame=value
+        }
+    }
+    override func setFrameSize(_ newSize:NSSize) {
+        super.setFrameSize(NSSize(width:newSize.width,height:max(newSize.height,(numberOfRows > 0 ? rect(ofRow:numberOfRows-1).maxY : 0)+bottomPadding)))
+    }
     var focused: (() -> Void)?
     var space: (() -> Void)?
     var enter: (() -> Void)?

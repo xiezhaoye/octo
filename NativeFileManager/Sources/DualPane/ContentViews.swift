@@ -6,6 +6,7 @@ import FileManagerCore
 @MainActor final class FileTile: NSCollectionViewItem {
     let image = NSImageView()
     let name = label("", size: 12)
+    let tagDots = FolderTagDots()
     var path: String?
     var palette = Palette.forSkin(.native)
     var thumbnail: QLThumbnailGenerator.Request?
@@ -14,10 +15,12 @@ import FileManagerCore
         image.imageScaling = .scaleProportionallyUpOrDown; image.widthAnchor.constraint(equalToConstant: 58).isActive = true; image.heightAnchor.constraint(equalToConstant: 58).isActive = true
         name.alignment = .center; name.maximumNumberOfLines = 2; name.lineBreakMode = .byTruncatingMiddle
         let stack = NSStackView(views: [image,name]); stack.orientation = .vertical; stack.spacing = 7; stack.alignment = .centerX; pin(stack, in: view, inset: 6); textField = name; imageView = image
+        view.addSubview(tagDots);tagDots.translatesAutoresizingMaskIntoConstraints=false
+        NSLayoutConstraint.activate([tagDots.centerXAnchor.constraint(equalTo:image.centerXAnchor),tagDots.bottomAnchor.constraint(equalTo:image.bottomAnchor,constant:3)])
     }
     override var isSelected: Bool { didSet { view.layer?.backgroundColor = (isSelected ? palette.selection : .clear).cgColor } }
-    func configure(_ record: FileRecord, palette: Palette) {
-        _ = view; self.palette = palette; path = record.url.path; name.stringValue = record.name; name.textColor = palette.text; view.toolTip = record.url.path; image.image = NSWorkspace.shared.icon(forFile: record.url.path)
+    func configure(_ record: FileRecord, palette: Palette, colors:[FolderTagColor] = []) {
+        _ = view; self.palette = palette; path = record.url.path; name.stringValue = record.name; name.textColor = palette.text; view.toolTip = record.url.path; image.image = taggedFolderIcon(record,colors:colors); tagDots.configure(colors)
         view.layer?.backgroundColor = (isSelected ? palette.selection : .clear).cgColor
         if let thumbnail { QLThumbnailGenerator.shared.cancel(thumbnail) }
         guard !record.directory, let type = UTType(filenameExtension: record.url.pathExtension), type.conforms(to: .image) || type.conforms(to: .pdf) else { return }
@@ -63,7 +66,7 @@ import FileManagerCore
     }
     func applyTheme() { guard isViewLoaded else { return }; view.layer?.backgroundColor = pane.palette.toolbar.cgColor; table.backgroundColor = pane.palette.canvas; heading.textColor = pane.palette.secondary; table.reloadData() }
     func numberOfRows(in tableView: NSTableView) -> Int { files.count }
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? { let r = files[row]; let icon = NSImageView(image: NSWorkspace.shared.icon(forFile: r.url.path)); icon.widthAnchor.constraint(equalToConstant: 18).isActive = true; icon.heightAnchor.constraint(equalToConstant: 18).isActive = true; let text = label(r.name, size: 13); text.textColor = pane.palette.text; text.toolTip = r.url.path; let views: [NSView] = r.browsable ? [icon,text,spacer(),NSImageView(image:symbol("chevron.right") ?? NSImage())] : [icon,text]; return rowStack(views, spacing: 6) }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? { let r = files[row]; let icon = NSImageView(image: taggedFolderIcon(r,colors:pane.app.state.colors(for:r.url))); icon.widthAnchor.constraint(equalToConstant: 18).isActive = true; icon.heightAnchor.constraint(equalToConstant: 18).isActive = true; let text = label(r.name, size: 13); text.textColor = pane.palette.text; text.toolTip = r.url.path; let views: [NSView] = r.browsable ? [icon,text,spacer(),FolderTagDots(pane.app.state.colors(for:r.url)),NSImageView(image:symbol("chevron.right") ?? NSImage())] : [icon,text]; return rowStack(views, spacing: 6) }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { let r = TintedRow(); r.tint = pane.palette.selection; return r }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !restoringSelection else { return }
@@ -84,6 +87,17 @@ import FileManagerCore
 
 @MainActor final class ColumnTable: NSTableView {
     weak var owner: DirectoryColumn?
+    override var frame:NSRect {
+        get {super.frame}
+        set {
+            var value=newValue
+            value.size.height=max(value.height,(numberOfRows > 0 ? rect(ofRow:numberOfRows-1).maxY : 0)+72)
+            super.frame=value
+        }
+    }
+    override func setFrameSize(_ newSize:NSSize) {
+        super.setFrameSize(NSSize(width:newSize.width,height:max(newSize.height,(numberOfRows > 0 ? rect(ofRow:numberOfRows-1).maxY : 0)+72)))
+    }
     override func scrollWheel(with event:NSEvent){if owner?.pane.routeColumnScroll(event)==true{return};super.scrollWheel(with:event)}
     override func keyDown(with event: NSEvent) { if event.charactersIgnoringModifiers == " " { owner?.pane.showFilePreview(); return }; super.keyDown(with: event) }
     override func menu(for event: NSEvent) -> NSMenu? { window?.makeFirstResponder(self); let row = self.row(at: convert(event.locationInWindow, from: nil)); if row >= 0 && !selectedRowIndexes.contains(row) { selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else if row < 0 { deselectAll(nil) }; return super.menu(for: event) }
