@@ -14,3 +14,12 @@ designs/
 .claude/
 .codex/
 .agents/
+
+# ── 内部文档：仅本地保留，永不提交 / 推送 ──
+交接.md
+部署.md
+待办.md
+架构.md
+错题本.md
+产品需求分析.md
+开发验收记录.md
