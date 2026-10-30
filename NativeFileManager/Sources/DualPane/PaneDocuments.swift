@@ -9,17 +9,31 @@ extension PaneController {
     }
     func addNewDocumentMenu(to menu: NSMenu) {
         let parent = NSMenuItem(title: "新建文件", action: nil, keyEquivalent: "")
+        let submenu = documentTypesMenu()
+        parent.submenu = submenu; menu.addItem(parent)
+    }
+    func documentTypesMenu(in directory:URL? = nil) -> NSMenu {
         let submenu = NSMenu()
         for kind in TextFileKind.allCases {
             let item = NSMenuItem(title: kind.title + "…", action: #selector(createDocument(_:)), keyEquivalent: "")
-            item.target = self; item.representedObject = kind.rawValue; submenu.addItem(item)
+            item.target = self
+            if let directory {item.representedObject=["kind":kind.rawValue,"directory":directory.path]}
+            else {item.representedObject=kind.rawValue}
+            submenu.addItem(item)
         }
-        parent.submenu = submenu; menu.addItem(parent)
+        return submenu
+    }
+    @objc func createCurrentFolder() {app.activePane=index;createFolder(in:currentURL)}
+    @objc func showCurrentFileTypes(_ sender:NSButton) {
+        app.activePane=index
+        documentTypesMenu(in:currentURL).popUp(positioning:nil,at:NSPoint(x:0,y:0),in:sender)
     }
     @objc func createDocument(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let kind = TextFileKind(rawValue: raw),
+        let parameters=sender.representedObject as? [String:String]
+        let raw=parameters?["kind"] ?? (sender.representedObject as? String) ?? ""
+        guard let kind = TextFileKind(rawValue: raw),
               let name = app.input("新建 " + kind.title, initial: "未命名." + kind.fileExtension) else { return }
-        let directory = creationDirectory
+        let directory = parameters?["directory"].map{URL(fileURLWithPath:$0)} ?? creationDirectory
         guard editor.prepareToLeave() else { return }
         do { let url = try kind.create(in: directory, name: name); revealCreatedDocument(url) }
         catch { app.showError(error) }

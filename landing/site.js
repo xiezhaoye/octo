@@ -16,7 +16,7 @@ dialog.addEventListener('click',event=>{
   if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close();
 });
 const views={
-  columns:{image:'assets/octo-workspace.jpg',alt:'分栏视图，在目录旁预览文档和图片',caption:'沿层级浏览，右侧直接查看文档和图片；文件夹或空白处右键即可新建文件。'},
+  columns:{image:'assets/octo-document-preview.jpg',alt:'分栏视图，在目录旁预览文档和图片',caption:'沿层级浏览，右侧直接查看文档和图片；文件夹或空白处右键即可新建文件。'},
   list:{image:'assets/octo-list.jpg',alt:'Octo 列表视图，显示文件名称、修改日期和大小',caption:'名称、修改日期、大小，点表头即可排序。列表还支持逐级展开文件夹。'},
   icons:{image:'assets/octo-icons.jpg',alt:'Octo 图标视图，以图标和缩略图浏览文件',caption:'图标和缩略图放在眼前；这张截图使用隔离样例目录导出。'}
 };

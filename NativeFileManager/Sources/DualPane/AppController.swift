@@ -7,6 +7,7 @@ import FileManagerCore
     var store: WorkspaceStore!
     var window: NSWindow!
     var panes: [PaneController] = []
+    var updateInstallAction:(() throws -> Void)?
     var paneSlots:[NSView]=[]
     var paneRestoreRails:[SidebarRail]=[]
     var collapsedPaneWidths:[NSLayoutConstraint]=[]
@@ -47,7 +48,7 @@ import FileManagerCore
         window.delegate = self
         window.setFrameAutosaveName("DualPaneMainWindow"); window.center(); window.toolbarStyle = .unifiedCompact
         let toolbar = NSToolbar(identifier: "MainToolbar"); toolbar.delegate = self; toolbar.displayMode = .iconAndLabel; window.toolbar = toolbar
-        window.titleVisibility = .hidden
+        window.titleVisibility = .hidden;window.titlebarAppearsTransparent=true
         let titleAccessory=NSTitlebarAccessoryViewController();titleAccessory.layoutAttribute = .left
         titleBrand=OctoTitleView(frame:NSRect(x:0,y:0,width:96,height:30));titleAccessory.view=titleBrand;window.addTitlebarAccessoryViewController(titleAccessory)
         NSApp.applicationIconImage=OctoBrand.logo
@@ -56,7 +57,7 @@ import FileManagerCore
         let paneStack = NSStackView(); paneStack.orientation = .horizontal; paneStack.distribution = .fill; paneStack.spacing = 0
         for i in 0..<2 {
             let p=PaneController(app:self,index:i);panes.append(p)
-            if i == 1{paneDivider.wantsLayer=true;paneDivider.widthAnchor.constraint(equalToConstant:4).isActive=true;paneStack.addArrangedSubview(paneDivider);paneDivider.heightAnchor.constraint(equalTo:paneStack.heightAnchor).isActive=true}
+            if i == 1{paneDivider.wantsLayer=true;paneDivider.widthAnchor.constraint(equalToConstant:1).isActive=true;paneStack.addArrangedSubview(paneDivider);paneDivider.heightAnchor.constraint(equalTo:paneStack.heightAnchor).isActive=true}
             let slot=NSView();paneSlots.append(slot);paneStack.addArrangedSubview(slot)
             slot.heightAnchor.constraint(equalTo:paneStack.heightAnchor).isActive=true
             let rail=SidebarRail();rail.image=symbol(i == 0 ? "chevron.right" : "chevron.left");rail.tag=i;rail.target=self;rail.action = #selector(restorePaneFromRail(_:));rail.toolTip=i == 0 ? "展开左屏" : "展开右屏";rail.setAccessibilityLabel(rail.toolTip!);rail.setAccessibilityIdentifier("restore-pane-\(i)");paneRestoreRails.append(rail)
@@ -71,16 +72,18 @@ import FileManagerCore
         paneStack.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true; status.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
         window.contentView = root
         applyAppearance(); applyVisibility()
-        window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil); if !args.contains("--ui-smoke") && !args.contains("--marketing-shots") {NSApp.activate(ignoringOtherApps: true)}
         panes.forEach { $0.navigate(to: URL(fileURLWithPath: state.panes[$0.index].directory), recordHistory: false) }
+        if let i=args.firstIndex(of:"--marketing-shots"),i+1<args.count,args.contains("--state-dir") {runMarketingShots(at:URL(fileURLWithPath:args[i+1]))}
         if let i = args.firstIndex(of: "--ui-smoke"), i+1 < args.count, args.contains("--state-dir") { runUISmoke(at: URL(fileURLWithPath: args[i+1])) }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { panes.allSatisfy { $0.editor.prepareToLeave() } }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { if !flag { window.makeKeyAndOrderFront(nil) }; return true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let install=updateInstallAction;updateInstallAction=nil
         if operationTask != nil { let a = NSAlert(); a.messageText = "文件操作尚未完成"; a.informativeText = "请等待当前操作结束，或先取消剩余项目。"; a.addButton(withTitle: "继续等待"); a.runModal(); return .terminateCancel }
-        guard panes.allSatisfy({ $0.editor.prepareToLeave() }) else { return .terminateCancel }; do { try store.save(state) } catch { showError(error); return .terminateCancel }; return .terminateNow
+        guard panes.allSatisfy({ $0.editor.prepareToLeave() }) else { return .terminateCancel }; do { try store.save(state);try install?() } catch { showError(error); return .terminateCancel }; return .terminateNow
     }
     @discardableResult func update(_ body: (inout Workspace) throws -> Void, refreshSidebar: Bool = true) -> Bool {
         do { var draft = state; try body(&draft); state = draft; saveSoon(); if refreshSidebar { panes.forEach { $0.reloadSidebar() } }; return true }
@@ -96,7 +99,7 @@ import FileManagerCore
         window?.backgroundColor = p.line; operationLabel.textColor = p.secondary
         window?.contentView?.layer?.backgroundColor = p.toolbar.cgColor
         panes.forEach { $0.applyTheme() }; settings?.applyTheme()
-        paneRestoreRails.forEach{$0.palette=p};titleBrand?.name.textColor=p.text;paneDivider.layer?.backgroundColor=p.secondary.withAlphaComponent(0.55).cgColor
+        paneRestoreRails.forEach{$0.palette=p};titleBrand?.name.textColor=p.text;paneDivider.layer?.backgroundColor=p.line.cgColor
     }
     func applyVisibility() {
         equalPaneWidths.isActive=false
@@ -111,6 +114,7 @@ import FileManagerCore
     @objc func restorePaneFromRail(_ sender:NSButton){restorePane(sender.tag)}
     func restorePane(_ index:Int){update({$0.restorePane(index)});panes[index].applySidebarState();applyVisibility();activePane=index}
     @objc func restoreBoth() {update({state in for i in state.panes.indices where state.panes[i].hidden{state.restorePane(i)}});panes.forEach{$0.applySidebarState()};applyVisibility()}
+    @objc func manageContextCommands() {openSettings();settings?.selectSection(.commands)}
     @objc func openSettings() { if settings == nil { settings = SettingsController(app: self) }; settings?.showWindow(nil); settings?.window?.makeKeyAndOrderFront(nil) }
     func showError(_ error: Error) { let a = NSAlert(error: error); if let window, window.isVisible { a.beginSheetModal(for: window) } else { a.runModal() } }
     func message(_ text: String) { operationLabel.stringValue = text;operationStatusView?.isHidden=false;messageTimer?.invalidate();if operationTask == nil {messageTimer=Timer.scheduledTimer(withTimeInterval:4,repeats:false){[weak self] _ in Task{@MainActor in if self?.operationTask == nil {self?.operationLabel.stringValue="";self?.operationStatusView?.isHidden=true}}}} }
